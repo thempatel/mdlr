@@ -1,8 +1,10 @@
 use anyhow::Result;
 use clap::Parser;
 use mdlr::cli::{Cli, Command, OutputFormat, SessionAction, TargetAction};
+use mdlr::config;
 use mdlr::extract::{extractor_for_path, supported_extensions, Extractor};
 use mdlr::graph::{Edge, EdgeKind, Graph};
+use mdlr::metrics::{BucketedMetrics, MetricsDisplay};
 use mdlr::session::{Session, SessionStore, Target};
 use std::fs;
 use std::path::Path;
@@ -80,6 +82,7 @@ fn handle_target(action: TargetAction, store: &SessionStore) -> Result<()> {
 
 fn handle_analyze(session_name: &str, format: OutputFormat, store: &SessionStore) -> Result<()> {
     let mut session = store.load(session_name)?;
+    let config = config::load()?;
 
     let graph = build_graph(&session.targets)?;
     session.update_graph(graph.clone());
@@ -93,22 +96,39 @@ fn handle_analyze(session_name: &str, format: OutputFormat, store: &SessionStore
             println!();
             println!("Graph: {} units, {} edges", graph.units.len(), graph.edges.len());
             println!();
-            print!("{}", metrics);
+            let display = MetricsDisplay::new(&metrics, &config);
+            print!("{}", display);
         }
         OutputFormat::Json => {
+            let bucketed = BucketedMetrics::from_metrics(&metrics, &config);
             let output = serde_json::json!({
                 "session": session_name,
                 "units": graph.units.len(),
                 "edges": graph.edges.len(),
                 "metrics": {
-                    "dag_density": metrics.dag_density,
+                    "dag_density": {
+                        "value": bucketed.dag_density.value,
+                        "bucket": bucketed.dag_density.bucket,
+                    },
                     "fan_in": {
-                        "max": metrics.fan_in.max,
-                        "mean": metrics.fan_in.mean,
+                        "max": {
+                            "value": bucketed.fan_in.max.value as usize,
+                            "bucket": bucketed.fan_in.max.bucket,
+                        },
+                        "mean": {
+                            "value": bucketed.fan_in.mean.value,
+                            "bucket": bucketed.fan_in.mean.bucket,
+                        },
                     },
                     "fan_out": {
-                        "max": metrics.fan_out.max,
-                        "mean": metrics.fan_out.mean,
+                        "max": {
+                            "value": bucketed.fan_out.max.value as usize,
+                            "bucket": bucketed.fan_out.max.bucket,
+                        },
+                        "mean": {
+                            "value": bucketed.fan_out.mean.value,
+                            "bucket": bucketed.fan_out.mean.bucket,
+                        },
                     }
                 }
             });

@@ -53,6 +53,20 @@ When density >> 2.0, the codebase is highly interconnected. This makes it:
 
 **Solution**: Identify and break circular dependencies, introduce interfaces/abstractions.
 
+## Bucket Labels
+
+mdlr displays bucket labels alongside metric values to help quickly assess code health. The five buckets are:
+
+| Bucket | Meaning |
+|--------|---------|
+| excellent | Well within healthy range |
+| good | Healthy, no action needed |
+| fair | Acceptable, consider monitoring |
+| poor | Action recommended |
+| critical | Requires attention |
+
+Labels and thresholds can be customized via [configuration](../reference/config.md).
+
 ## Example Analysis
 
 ```
@@ -63,10 +77,10 @@ Graph: 87 units, 36 edges
 Structural Metrics
 ==================
 
-DAG Density: 0.419
+DAG Density: 0.419 (excellent)
 
-Fan-In:  max=4, mean=0.43
-Fan-Out: max=6, mean=0.43
+Fan-In:  max=4 (good), mean=0.43 (excellent)
+Fan-Out: max=6 (fair), mean=0.43 (excellent)
 
 Top Fan-Out:
   extract_from_node (6)
@@ -81,13 +95,13 @@ Top Fan-In:
 
 **Reading this output:**
 
-1. **DAG Density 0.419**: Below 1.0, indicating a loosely coupled codebase with some disconnected components. This is healthy.
+1. **DAG Density 0.419 (excellent)**: Well below 1.0, indicating a loosely coupled codebase. The "excellent" bucket confirms this is healthy.
 
-2. **Fan-Out max=6**: `extract_from_node` has the highest fan-out. This is expected - it's an orchestration function that dispatches to various extractors.
+2. **Fan-Out max=6 (fair)**: `extract_from_node` has the highest fan-out. The "fair" label suggests it's acceptable but worth monitoring. This is expected - it's an orchestration function that dispatches to various extractors.
 
-3. **Fan-In max=4**: `get_node_name` and `node_span` are the most reused utilities. They should be stable and well-tested.
+3. **Fan-In max=4 (good)**: `get_node_name` and `node_span` are the most reused utilities. "Good" indicates healthy reuse levels. They should be stable and well-tested.
 
-4. **Mean values ~0.43**: Low average connectivity suggests most units are focused and independent.
+4. **Mean values ~0.43 (excellent)**: Low average connectivity suggests most units are focused and independent.
 
 ## Tracking Over Time
 
