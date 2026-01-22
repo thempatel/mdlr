@@ -2,41 +2,42 @@
 
 ## Basic Workflow
 
-1. **Create a session** to hold your analysis state:
+1. **Check what needs analysis:**
    ```bash
-   mdlr session new my-project
+   mdlr todo
    ```
 
-2. **Add targets** to analyze (directories, files, or specific objects):
+2. **Run analysis** to extract the graph and compute metrics:
    ```bash
-   mdlr target add ./src --session my-project
+   mdlr analyze
    ```
 
-3. **Run analysis** to extract the graph and compute metrics:
+3. **Export the graph** for further processing:
    ```bash
-   mdlr analyze --session my-project
-   ```
-
-4. **Export the graph** for further processing:
-   ```bash
-   mdlr export --session my-project --format json
+   mdlr export --format json
    ```
 
 ## Example Session
 
 ```bash
-# Create a new session
-$ mdlr session new demo
-Created session 'demo'
+# Check status (first time, all files are new)
+$ mdlr todo
+New files (7):
+  src/main.rs
+  src/lib.rs
+  src/cli.rs
+  src/graph/mod.rs
+  src/graph/types.rs
+  src/extract/mod.rs
+  src/extract/rust.rs
 
-# Add the src directory
-$ mdlr target add ./src --session demo
-Added target './src' to session 'demo'
+Run 'mdlr analyze' to update 7 file(s).
 
 # Run analysis
-$ mdlr analyze --session demo
-Analysis for session 'demo'
+$ mdlr analyze
+Analysis complete
 
+Files: 7 extracted, 0 from cache
 Graph: 87 units, 36 edges
 
 Structural Metrics
@@ -57,16 +58,39 @@ Top Fan-In:
   node_span (4)
   compute (3)
 
-# Clean up when done
-$ mdlr session delete demo
-Deleted session 'demo'
+# Check status again (all cached now)
+$ mdlr todo
+All files are up to date.
+
+# Modify a file, then check again
+$ echo "// comment" >> src/main.rs
+$ mdlr todo
+Changed files (1):
+  src/main.rs
+
+Run 'mdlr analyze' to update 1 file(s).
+
+# Incremental analysis (only re-extracts changed files)
+$ mdlr analyze
+Analysis complete
+
+Files: 1 extracted, 6 from cache
+Graph: 87 units, 36 edges
+...
 ```
 
-## Targeting Specific Objects
+## Cache Directory
 
-You can target specific code objects using the `file::name` syntax:
+Analysis results are cached in `.mdlr/` in your project root. Add this to your `.gitignore`:
+
+```
+.mdlr/
+```
+
+## Force Re-Analysis
+
+To ignore the cache and re-analyze all files:
 
 ```bash
-# Analyze only MyStruct and related code
-mdlr target add ./src/lib.rs::MyStruct --session my-project
+mdlr analyze --force
 ```

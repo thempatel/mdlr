@@ -1,100 +1,199 @@
 use anyhow::Result;
 use clap::Parser;
-use mdlr::cli::{Cli, Command, OutputFormat, SessionAction, TargetAction};
+use mdlr::cache::{get_file_metadata, now_timestamp, CacheStore, FileCacheEntry, ProjectIndex};
+use mdlr::cli::{Cli, Command, OutputFormat};
 use mdlr::config;
-use mdlr::extract::{extractor_for_path, supported_extensions, Extractor};
-use mdlr::graph::{Edge, EdgeKind, Graph};
+use mdlr::extract::{extractor_for_path, Extractor};
+use mdlr::graph::{Edge, EdgeKind, Graph, Unit};
 use mdlr::metrics::{BucketedMetrics, MetricsDisplay};
-use mdlr::session::{Session, SessionStore, Target};
+use mdlr::walk::SourceWalker;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let store = SessionStore::new()?;
 
     match cli.command {
-        Command::Session { action } => handle_session(action, &store),
-        Command::Target { action } => handle_target(action, &store),
-        Command::Analyze { session, format } => handle_analyze(&session, format, &store),
-        Command::Export { session, format } => handle_export(&session, format, &store),
+        Command::Todo { path, all, format } => handle_todo(&path, all, format),
+        Command::Analyze { path, force, format } => handle_analyze(&path, force, format),
+        Command::Export { path, format } => handle_export(&path, format),
     }
 }
 
-fn handle_session(action: SessionAction, store: &SessionStore) -> Result<()> {
-    match action {
-        SessionAction::New { name } => {
-            store.create(&name)?;
-            println!("Created session '{}'", name);
-        }
-        SessionAction::List => {
-            let sessions = store.list()?;
-            if sessions.is_empty() {
-                println!("No sessions found");
-            } else {
-                println!("Sessions:");
-                for session in sessions {
-                    println!("  {}", session);
+fn handle_todo(path: &Path, all: bool, format: OutputFormat) -> Result<()> {
+    let store = CacheStore::open(path)?;
+    let index = store.load_index()?;
+    let walker = SourceWalker::new(store.root());
+
+    let mut new_files = Vec::new();
+    let mut changed_files = Vec::new();
+    let mut untagged_files = Vec::new();
+
+    for file_path in walker.walk() {
+        let relative = file_path
+            .strip_prefix(store.root())
+            .unwrap_or(&file_path)
+            .to_path_buf();
+
+        let current_meta = get_file_metadata(&file_path)?;
+
+        match index.files.get(&relative) {
+            None => {
+                new_files.push(relative);
+            }
+            Some(cached_meta) => {
+                if cached_meta.mtime != current_meta.mtime || cached_meta.size != current_meta.size
+                {
+                    changed_files.push(relative);
+                } else if all {
+                    if let Ok(Some(entry)) = store.load_entry(&file_path) {
+                        if entry.units.iter().any(|u| u.tags.is_empty()) {
+                            untagged_files.push(relative);
+                        }
+                    }
                 }
             }
         }
-        SessionAction::Delete { name } => {
-            store.delete(&name)?;
-            println!("Deleted session '{}'", name);
-        }
-        SessionAction::Show { name } => {
-            let session = store.load(&name)?;
-            print_session_info(&session);
-        }
     }
-    Ok(())
-}
 
-fn handle_target(action: TargetAction, store: &SessionStore) -> Result<()> {
-    match action {
-        TargetAction::Add { path, session } => {
-            let mut sess = store.load(&session)?;
-            let target = mdlr::cli::parse_target(&path);
-            sess.add_target(target);
-            store.save(&sess)?;
-            println!("Added target '{}' to session '{}'", path, session);
-        }
-        TargetAction::List { session } => {
-            let sess = store.load(&session)?;
-            if sess.targets.is_empty() {
-                println!("No targets in session '{}'", session);
-            } else {
-                println!("Targets in session '{}':", session);
-                for target in &sess.targets {
-                    println!("  {}", format_target(target));
+    match format {
+        OutputFormat::Text => {
+            let has_work = !new_files.is_empty() || !changed_files.is_empty();
+            let has_untagged = !untagged_files.is_empty();
+
+            if !has_work && !has_untagged {
+                println!("All files are up to date.");
+                return Ok(());
+            }
+
+            if !new_files.is_empty() {
+                println!("New files ({}):", new_files.len());
+                for f in &new_files {
+                    println!("  {}", f.display());
                 }
+                println!();
+            }
+
+            if !changed_files.is_empty() {
+                println!("Changed files ({}):", changed_files.len());
+                for f in &changed_files {
+                    println!("  {}", f.display());
+                }
+                println!();
+            }
+
+            if all && !untagged_files.is_empty() {
+                println!("Files with untagged units ({}):", untagged_files.len());
+                for f in &untagged_files {
+                    println!("  {}", f.display());
+                }
+                println!();
+            }
+
+            let total = new_files.len() + changed_files.len();
+            if total > 0 {
+                println!("Run 'mdlr analyze' to update {} file(s).", total);
             }
         }
-        TargetAction::Clear { session } => {
-            let mut sess = store.load(&session)?;
-            sess.clear_targets();
-            store.save(&sess)?;
-            println!("Cleared targets from session '{}'", session);
+        OutputFormat::Json => {
+            let output = serde_json::json!({
+                "new": new_files,
+                "changed": changed_files,
+                "untagged": if all { untagged_files } else { vec![] },
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
     }
+
     Ok(())
 }
 
-fn handle_analyze(session_name: &str, format: OutputFormat, store: &SessionStore) -> Result<()> {
-    let mut session = store.load(session_name)?;
+fn handle_analyze(path: &Path, force: bool, format: OutputFormat) -> Result<()> {
+    let store = CacheStore::open(path)?;
     let config = config::load()?;
+    let walker = SourceWalker::new(store.root());
 
-    let graph = build_graph(&session.targets)?;
-    session.update_graph(graph.clone());
-    store.save(&session)?;
+    let mut index = if force {
+        ProjectIndex::default()
+    } else {
+        store.load_index()?
+    };
 
+    let mut all_units: Vec<Unit> = Vec::new();
+    let mut extracted_count = 0;
+    let mut cached_count = 0;
+
+    for file_path in walker.walk() {
+        let relative = file_path
+            .strip_prefix(store.root())
+            .unwrap_or(&file_path)
+            .to_path_buf();
+
+        let current_meta = get_file_metadata(&file_path)?;
+        let is_stale = force
+            || index
+                .files
+                .get(&relative)
+                .map(|m| m.mtime != current_meta.mtime || m.size != current_meta.size)
+                .unwrap_or(true);
+
+        let units = if is_stale {
+            if let Some(extractor) = extractor_for_path(&file_path) {
+                match extract_file(&file_path, extractor.as_ref()) {
+                    Ok(units) => {
+                        let entry = FileCacheEntry {
+                            source_path: relative.clone(),
+                            mtime: current_meta.mtime,
+                            size: current_meta.size,
+                            units: units.clone(),
+                            cached_at: now_timestamp(),
+                        };
+                        store.save_entry(&entry)?;
+                        index.files.insert(relative, current_meta);
+                        extracted_count += 1;
+                        units
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to extract {}: {}", file_path.display(), e);
+                        continue;
+                    }
+                }
+            } else {
+                continue;
+            }
+        } else {
+            match store.load_entry(&file_path)? {
+                Some(entry) => {
+                    cached_count += 1;
+                    entry.units
+                }
+                None => continue,
+            }
+        };
+
+        all_units.extend(units);
+    }
+
+    index.last_scan = now_timestamp();
+    store.save_index(&index)?;
+
+    let graph = build_graph(all_units);
     let metrics = mdlr::metrics::compute(&graph);
 
     match format {
         OutputFormat::Text => {
-            println!("Analysis for session '{}'", session_name);
+            println!("Analysis complete");
             println!();
-            println!("Graph: {} units, {} edges", graph.units.len(), graph.edges.len());
+            println!(
+                "Files: {} extracted, {} from cache",
+                extracted_count, cached_count
+            );
+            println!(
+                "Graph: {} units, {} edges",
+                graph.units.len(),
+                graph.edges.len()
+            );
             println!();
             let display = MetricsDisplay::new(&metrics, &config);
             print!("{}", display);
@@ -102,7 +201,10 @@ fn handle_analyze(session_name: &str, format: OutputFormat, store: &SessionStore
         OutputFormat::Json => {
             let bucketed = BucketedMetrics::from_metrics(&metrics, &config);
             let output = serde_json::json!({
-                "session": session_name,
+                "files": {
+                    "extracted": extracted_count,
+                    "cached": cached_count,
+                },
                 "units": graph.units.len(),
                 "edges": graph.edges.len(),
                 "metrics": {
@@ -139,24 +241,35 @@ fn handle_analyze(session_name: &str, format: OutputFormat, store: &SessionStore
     Ok(())
 }
 
-fn handle_export(session_name: &str, format: OutputFormat, store: &SessionStore) -> Result<()> {
-    let session = store.load(session_name)?;
+fn handle_export(path: &Path, format: OutputFormat) -> Result<()> {
+    let store = CacheStore::open(path)?;
+    let walker = SourceWalker::new(store.root());
+
+    let mut all_units: Vec<Unit> = Vec::new();
+
+    for file_path in walker.walk() {
+        if let Ok(Some(entry)) = store.load_entry(&file_path) {
+            all_units.extend(entry.units);
+        }
+    }
+
+    let graph = build_graph(all_units);
 
     match format {
         OutputFormat::Json => {
-            let json = mdlr::graph::serialize::to_json(&session.graph)?;
+            let json = mdlr::graph::serialize::to_json(&graph)?;
             println!("{}", json);
         }
         OutputFormat::Text => {
-            println!("Graph for session '{}'", session_name);
+            println!("Graph");
             println!();
-            println!("Units ({}):", session.graph.units.len());
-            for unit in &session.graph.units {
+            println!("Units ({}):", graph.units.len());
+            for unit in &graph.units {
                 println!("  {} ({:?}) - {:?}", unit.id, unit.kind, unit.file);
             }
             println!();
-            println!("Edges ({}):", session.graph.edges.len());
-            for edge in &session.graph.edges {
+            println!("Edges ({}):", graph.edges.len());
+            for edge in &graph.edges {
                 println!("  {} -> {} ({:?})", edge.from, edge.to, edge.kind);
             }
         }
@@ -165,43 +278,11 @@ fn handle_export(session_name: &str, format: OutputFormat, store: &SessionStore)
     Ok(())
 }
 
-fn build_graph(targets: &[Target]) -> Result<Graph> {
+fn build_graph(units: Vec<Unit>) -> Graph {
     let mut graph = Graph::new();
-    let mut all_units = Vec::new();
+    let unit_ids: HashSet<_> = units.iter().map(|u| u.id.clone()).collect();
 
-    for target in targets {
-        match target {
-            Target::Directory(dir) => {
-                collect_files_recursive(dir, &mut |path| {
-                    if let Some(extractor) = extractor_for_path(path) {
-                        if let Ok(units) = extract_file(path, extractor.as_ref()) {
-                            all_units.extend(units);
-                        }
-                    }
-                })?;
-            }
-            Target::File(path) => {
-                if let Some(extractor) = extractor_for_path(path) {
-                    let units = extract_file(path, extractor.as_ref())?;
-                    all_units.extend(units);
-                }
-            }
-            Target::Object { file, name } => {
-                if let Some(extractor) = extractor_for_path(file) {
-                    let units = extract_file(file, extractor.as_ref())?;
-                    let filtered: Vec<_> = units
-                        .into_iter()
-                        .filter(|u| u.id.contains(name))
-                        .collect();
-                    all_units.extend(filtered);
-                }
-            }
-        }
-    }
-
-    let unit_ids: std::collections::HashSet<_> = all_units.iter().map(|u| u.id.clone()).collect();
-
-    for unit in &all_units {
+    for unit in &units {
         for call in &unit.calls {
             if unit_ids.contains(call) {
                 graph.add_edge(Edge {
@@ -213,59 +294,14 @@ fn build_graph(targets: &[Target]) -> Result<Graph> {
         }
     }
 
-    for unit in all_units {
+    for unit in units {
         graph.add_unit(unit);
     }
 
-    Ok(graph)
+    graph
 }
 
-fn extract_file(path: &Path, extractor: &dyn Extractor) -> Result<Vec<mdlr::graph::Unit>> {
+fn extract_file(path: &Path, extractor: &dyn Extractor) -> Result<Vec<Unit>> {
     let source = fs::read_to_string(path)?;
     extractor.extract(&source, path)
-}
-
-fn collect_files_recursive<F>(dir: &Path, callback: &mut F) -> Result<()>
-where
-    F: FnMut(&Path),
-{
-    if !dir.is_dir() {
-        return Ok(());
-    }
-
-    let extensions = supported_extensions();
-
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_dir() {
-            collect_files_recursive(&path, callback)?;
-        } else if let Some(ext) = path.extension() {
-            if extensions.contains(&ext.to_str().unwrap_or("")) {
-                callback(&path);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn print_session_info(session: &Session) {
-    println!("Session: {}", session.id);
-    println!("Created: {}", session.created_at);
-    println!("Updated: {}", session.updated_at);
-    println!("Targets: {}", session.targets.len());
-    for target in &session.targets {
-        println!("  {}", format_target(target));
-    }
-    println!("Graph: {} units, {} edges", session.graph.units.len(), session.graph.edges.len());
-}
-
-fn format_target(target: &Target) -> String {
-    match target {
-        Target::Directory(p) => format!("{} (directory)", p.display()),
-        Target::File(p) => format!("{} (file)", p.display()),
-        Target::Object { file, name } => format!("{}::{} (object)", file.display(), name),
-    }
 }

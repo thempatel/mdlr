@@ -9,128 +9,92 @@
 
 ## Commands
 
-### session
+### todo
 
-Manage analysis sessions.
-
-#### `session new <name>`
-
-Create a new analysis session.
+Show files that need analysis.
 
 ```bash
-mdlr session new my-project
+mdlr todo [path] [--all] [--format <format>]
 ```
 
-#### `session list`
+| Option | Default | Description |
+|--------|---------|-------------|
+| `path` | `.` | Directory to check |
+| `--all` | false | Also show files with untagged units |
+| `--format` | `text` | Output format: `text` or `json` |
 
-List all sessions.
-
-```bash
-mdlr session list
-```
-
-#### `session show <name>`
-
-Show session details including targets and graph size.
+**Examples:**
 
 ```bash
-mdlr session show my-project
-```
+# Check current directory
+mdlr todo
 
-#### `session delete <name>`
+# Check specific directory
+mdlr todo ./src
 
-Delete a session.
+# Include files with untagged units
+mdlr todo --all
 
-```bash
-mdlr session delete my-project
-```
-
----
-
-### target
-
-Manage analysis targets within a session.
-
-#### `target add <path> --session <name>`
-
-Add a target to analyze. Targets can be:
-- Directories (recursively analyzed)
-- Files
-- Specific objects using `file::name` syntax
-
-```bash
-# Add a directory
-mdlr target add ./src --session my-project
-
-# Add a specific file
-mdlr target add ./src/main.rs --session my-project
-
-# Add a specific object
-mdlr target add ./src/lib.rs::MyStruct --session my-project
-```
-
-#### `target list --session <name>`
-
-List all targets in a session.
-
-```bash
-mdlr target list --session my-project
-```
-
-#### `target clear --session <name>`
-
-Remove all targets from a session.
-
-```bash
-mdlr target clear --session my-project
+# JSON output for scripting
+mdlr todo --format json
 ```
 
 ---
 
 ### analyze
 
-Run analysis on a session and display metrics.
+Run analysis on a directory and display metrics.
 
 ```bash
-mdlr analyze --session <name> [--format <format>]
+mdlr analyze [path] [--force] [--format <format>]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--session` | required | Session name |
+| `path` | `.` | Directory to analyze |
+| `--force` | false | Force re-analysis of all files |
 | `--format` | `text` | Output format: `text` or `json` |
 
 **Examples:**
 
 ```bash
-# Human-readable output
-mdlr analyze --session my-project
+# Analyze current directory (incremental)
+mdlr analyze
+
+# Analyze specific directory
+mdlr analyze ./my-project
+
+# Force full re-analysis
+mdlr analyze --force
 
 # JSON output for scripting
-mdlr analyze --session my-project --format json
+mdlr analyze --format json
 ```
 
 ---
 
 ### export
 
-Export the graph from a session.
+Export the graph from cached analysis.
 
 ```bash
-mdlr export --session <name> [--format <format>]
+mdlr export [path] [--format <format>]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--session` | required | Session name |
+| `path` | `.` | Directory to export from |
 | `--format` | `json` | Output format: `text` or `json` |
 
 **Examples:**
 
 ```bash
 # Export as JSON
-mdlr export --session my-project --format json > graph.json
+mdlr export > graph.json
+
+# Export specific directory
+mdlr export ./my-project --format json
 
 # Human-readable list
-mdlr export --session my-project --format text
+mdlr export --format text
 ```

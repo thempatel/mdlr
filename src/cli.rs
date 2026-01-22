@@ -12,78 +12,38 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Manage analysis sessions
-    Session {
-        #[command(subcommand)]
-        action: SessionAction,
-    },
-    /// Manage analysis targets
-    Target {
-        #[command(subcommand)]
-        action: TargetAction,
-    },
-    /// Run analysis on a session
-    Analyze {
-        /// Session name
+    /// Show files that need analysis
+    Todo {
+        /// Path to analyze (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Also show files with untagged units
         #[arg(long)]
-        session: String,
+        all: bool,
         /// Output format
         #[arg(long, default_value = "text")]
         format: OutputFormat,
     },
-    /// Export the graph from a session
-    Export {
-        /// Session name
+    /// Run analysis on a directory
+    Analyze {
+        /// Path to analyze (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Force re-analysis of all files
         #[arg(long)]
-        session: String,
+        force: bool,
+        /// Output format
+        #[arg(long, default_value = "text")]
+        format: OutputFormat,
+    },
+    /// Export the graph from cached analysis
+    Export {
+        /// Path to export from (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
         /// Output format
         #[arg(long, default_value = "json")]
         format: OutputFormat,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum SessionAction {
-    /// Create a new session
-    New {
-        /// Session name
-        name: String,
-    },
-    /// List all sessions
-    List,
-    /// Delete a session
-    Delete {
-        /// Session name
-        name: String,
-    },
-    /// Show session details
-    Show {
-        /// Session name
-        name: String,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum TargetAction {
-    /// Add a target to a session
-    Add {
-        /// Path or object reference to add
-        path: String,
-        /// Session name
-        #[arg(long)]
-        session: String,
-    },
-    /// List targets in a session
-    List {
-        /// Session name
-        #[arg(long)]
-        session: String,
-    },
-    /// Clear all targets from a session
-    Clear {
-        /// Session name
-        #[arg(long)]
-        session: String,
     },
 }
 
@@ -92,20 +52,4 @@ pub enum OutputFormat {
     #[default]
     Text,
     Json,
-}
-
-pub fn parse_target(input: &str) -> crate::session::Target {
-    if let Some((file, name)) = input.split_once("::") {
-        crate::session::Target::Object {
-            file: PathBuf::from(file),
-            name: name.to_string(),
-        }
-    } else {
-        let path = PathBuf::from(input);
-        if path.is_dir() {
-            crate::session::Target::Directory(path)
-        } else {
-            crate::session::Target::File(path)
-        }
-    }
 }

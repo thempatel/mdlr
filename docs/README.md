@@ -23,7 +23,7 @@ A modularity analyzer for code. Uses tree-sitter to parse source files, builds a
 - [Configuration](reference/config.md)
 - [Graph Structure](reference/graph.md)
 - [Supported Languages](reference/languages.md)
-- [Session Storage](reference/sessions.md)
+- [Cache System](reference/cache.md)
 
 ## License
 
