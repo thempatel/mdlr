@@ -24,28 +24,63 @@ Units are the nodes in the graph. Each unit represents a code entity.
 | `kind` | Unit type (Function, Struct, etc.) |
 | `file` | Source file path |
 | `span` | Location in source (line/column) |
-| `reads` | Entities consumed (future) |
-| `writes` | Entities produced (future) |
+| `reads` | Fields read via `self.field` access |
+| `writes` | Fields written via `self.field = value` |
 | `calls` | Other units invoked |
-| `tags` | Domain labels (future) |
+| `tags` | Semantic domain labels |
+| `params` | Number of parameters (functions only) |
+| `branches` | Number of branch points for cyclomatic complexity |
+| `parent` | Parent unit ID (e.g., impl block for methods) |
+| `impl_trait` | Trait being implemented (impl blocks only) |
+| `impl_type` | Type being implemented (impl blocks only) |
 
 ### Example Unit (JSON)
 
 ```json
 {
-  "id": "extract::rust::extract_function",
+  "id": "get_x",
   "kind": "Function",
-  "file": "./src/extract/rust.rs",
+  "file": "./src/foo.rs",
   "span": {
-    "start_line": 107,
+    "start_line": 15,
+    "start_col": 4,
+    "end_line": 17,
+    "end_col": 5
+  },
+  "reads": ["x"],
+  "writes": [],
+  "calls": [],
+  "tags": ["domain:core"],
+  "params": 1,
+  "branches": 0,
+  "parent": "impl Foo",
+  "impl_trait": null,
+  "impl_type": null
+}
+```
+
+### Example Impl Block (JSON)
+
+```json
+{
+  "id": "impl Display for Foo",
+  "kind": "Impl",
+  "file": "./src/foo.rs",
+  "span": {
+    "start_line": 20,
     "start_col": 0,
-    "end_line": 121,
+    "end_line": 30,
     "end_col": 1
   },
   "reads": [],
   "writes": [],
-  "calls": ["get_node_name", "extract_calls", "node_span"],
-  "tags": []
+  "calls": [],
+  "tags": [],
+  "params": 0,
+  "branches": 0,
+  "parent": null,
+  "impl_trait": "Display",
+  "impl_type": "Foo"
 }
 ```
 

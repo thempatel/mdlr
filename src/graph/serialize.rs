@@ -34,6 +34,9 @@ mod tests {
             tags: vec![],
             params: 0,
             branches: 0,
+            parent: None,
+            impl_trait: None,
+            impl_type: None,
         });
         graph.add_edge(Edge {
             from: "test::foo".to_string(),

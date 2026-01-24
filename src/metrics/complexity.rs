@@ -266,6 +266,9 @@ mod tests {
             tags: vec![],
             params,
             branches,
+            parent: None,
+            impl_trait: None,
+            impl_type: None,
         }
     }
 

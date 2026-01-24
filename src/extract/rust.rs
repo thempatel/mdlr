@@ -36,6 +36,7 @@ impl Extractor for RustExtractor {
             source,
             path,
             module_path: Vec::new(),
+            current_impl: None,
         };
 
         extract_from_node(tree.root_node(), &mut context, &mut units);
@@ -48,6 +49,8 @@ struct ExtractionContext<'a> {
     source: &'a str,
     path: &'a Path,
     module_path: Vec<String>,
+    /// Current impl block ID (if inside an impl)
+    current_impl: Option<String>,
 }
 
 impl<'a> ExtractionContext<'a> {
@@ -79,7 +82,16 @@ fn extract_from_node(node: Node, ctx: &mut ExtractionContext, units: &mut Vec<Un
         }
         "impl_item" => {
             if let Some(unit) = extract_impl(node, ctx) {
+                let impl_id = unit.id.clone();
                 units.push(unit);
+                // Extract methods inside this impl
+                let old_impl = ctx.current_impl.take();
+                ctx.current_impl = Some(impl_id);
+                for child in node.children(&mut node.walk()) {
+                    extract_from_node(child, ctx, units);
+                }
+                ctx.current_impl = old_impl;
+                return;
             }
         }
         "mod_item" => {
@@ -105,18 +117,22 @@ fn extract_function(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
     let calls = extract_calls(node, ctx.source);
     let params = count_parameters(node);
     let branches = count_branches(node);
+    let (reads, writes) = extract_field_access(node, ctx.source);
 
     Some(Unit {
         id: ctx.qualified_name(&name),
         kind: UnitKind::Function,
         file: ctx.path.to_path_buf(),
         span: node_span(node),
-        reads: Vec::new(),
-        writes: Vec::new(),
+        reads,
+        writes,
         calls,
         tags: Vec::new(),
         params,
         branches,
+        parent: ctx.current_impl.clone(),
+        impl_trait: None,
+        impl_type: None,
     })
 }
 
@@ -134,6 +150,9 @@ fn extract_struct(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
         tags: Vec::new(),
         params: 0,
         branches: 0,
+        parent: None,
+        impl_trait: None,
+        impl_type: None,
     })
 }
 
@@ -151,6 +170,9 @@ fn extract_trait(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
         tags: Vec::new(),
         params: 0,
         branches: 0,
+        parent: None,
+        impl_trait: None,
+        impl_type: None,
     })
 }
 
@@ -162,8 +184,8 @@ fn extract_impl(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
         .child_by_field_name("trait")
         .map(|n| node_text(n, ctx.source));
 
-    let id = match trait_name {
-        Some(trait_name) => ctx.qualified_name(&format!("impl {} for {}", trait_name, type_name)),
+    let id = match &trait_name {
+        Some(t) => ctx.qualified_name(&format!("impl {} for {}", t, type_name)),
         None => ctx.qualified_name(&format!("impl {}", type_name)),
     };
 
@@ -178,6 +200,9 @@ fn extract_impl(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
         tags: Vec::new(),
         params: 0,
         branches: 0,
+        parent: None,
+        impl_trait: trait_name,
+        impl_type: Some(type_name),
     })
 }
 
@@ -306,6 +331,61 @@ fn count_branches_recursive(node: Node, count: &mut usize) {
 
     for child in node.children(&mut node.walk()) {
         count_branches_recursive(child, count);
+    }
+}
+
+/// Extract field reads and writes from a function body
+/// Returns (reads, writes) where each is a list of field names
+fn extract_field_access(node: Node, source: &str) -> (Vec<String>, Vec<String>) {
+    let mut reads = Vec::new();
+    let mut writes = Vec::new();
+    collect_field_access(node, source, &mut reads, &mut writes, false);
+    reads.sort();
+    reads.dedup();
+    writes.sort();
+    writes.dedup();
+    (reads, writes)
+}
+
+fn collect_field_access(
+    node: Node,
+    source: &str,
+    reads: &mut Vec<String>,
+    writes: &mut Vec<String>,
+    in_assignment_lhs: bool,
+) {
+    match node.kind() {
+        "field_expression" => {
+            // Check if this is self.field access
+            if let Some(value) = node.child_by_field_name("value") {
+                let value_text = node_text(value, source);
+                if value_text == "self" || value_text == "&self" || value_text == "&mut self" {
+                    if let Some(field) = node.child_by_field_name("field") {
+                        let field_name = node_text(field, source);
+                        if in_assignment_lhs {
+                            writes.push(field_name);
+                        } else {
+                            reads.push(field_name);
+                        }
+                    }
+                }
+            }
+        }
+        "assignment_expression" | "compound_assignment_expr" => {
+            // Left side is a write, right side is a read
+            if let Some(left) = node.child_by_field_name("left") {
+                collect_field_access(left, source, reads, writes, true);
+            }
+            if let Some(right) = node.child_by_field_name("right") {
+                collect_field_access(right, source, reads, writes, false);
+            }
+            return; // Don't recurse normally, we handled children
+        }
+        _ => {}
+    }
+
+    for child in node.children(&mut node.walk()) {
+        collect_field_access(child, source, reads, writes, in_assignment_lhs);
     }
 }
 
@@ -512,5 +592,103 @@ fn with_and_or(a: bool, b: bool, c: bool) {
         assert_eq!(units[3].branches, 1, "with_match with 2 arms should have 1 branch");
         assert_eq!(units[4].branches, 2, "with_loop should have 2 branches (for + while)");
         assert_eq!(units[5].branches, 3, "with_and_or should have 3 branches (if + && + ||)");
+    }
+
+    #[test]
+    fn test_extract_impl_methods() {
+        let extractor = RustExtractor::new().unwrap();
+        let source = r#"
+struct Foo {
+    x: i32,
+}
+
+impl Foo {
+    fn new() -> Self {
+        Self { x: 0 }
+    }
+
+    fn get_x(&self) -> i32 {
+        self.x
+    }
+
+    fn set_x(&mut self, val: i32) {
+        self.x = val;
+    }
+}
+"#;
+        let units = extractor
+            .extract(source, &PathBuf::from("test.rs"))
+            .unwrap();
+
+        // Should have: struct Foo, impl Foo, new, get_x, set_x
+        assert_eq!(units.len(), 5);
+
+        let impl_unit = units.iter().find(|u| u.id == "impl Foo").unwrap();
+        assert_eq!(impl_unit.kind, UnitKind::Impl);
+        assert_eq!(impl_unit.impl_type, Some("Foo".to_string()));
+        assert_eq!(impl_unit.impl_trait, None);
+
+        let new_fn = units.iter().find(|u| u.id == "new").unwrap();
+        assert_eq!(new_fn.parent, Some("impl Foo".to_string()));
+
+        let get_x = units.iter().find(|u| u.id == "get_x").unwrap();
+        assert_eq!(get_x.parent, Some("impl Foo".to_string()));
+    }
+
+    #[test]
+    fn test_extract_trait_impl() {
+        let extractor = RustExtractor::new().unwrap();
+        let source = r#"
+struct Bar;
+
+impl Display for Bar {
+    fn fmt(&self, f: &mut Formatter) -> Result {
+        write!(f, "Bar")
+    }
+}
+"#;
+        let units = extractor
+            .extract(source, &PathBuf::from("test.rs"))
+            .unwrap();
+
+        let impl_unit = units
+            .iter()
+            .find(|u| u.id == "impl Display for Bar")
+            .unwrap();
+        assert_eq!(impl_unit.impl_type, Some("Bar".to_string()));
+        assert_eq!(impl_unit.impl_trait, Some("Display".to_string()));
+
+        let fmt_fn = units.iter().find(|u| u.id == "fmt").unwrap();
+        assert_eq!(fmt_fn.parent, Some("impl Display for Bar".to_string()));
+    }
+
+    #[test]
+    fn test_extract_field_access() {
+        let extractor = RustExtractor::new().unwrap();
+        let source = r#"
+impl Foo {
+    fn reader(&self) -> i32 {
+        self.x + self.y
+    }
+
+    fn writer(&mut self) {
+        self.x = 10;
+        self.y = self.z;
+    }
+}
+"#;
+        let units = extractor
+            .extract(source, &PathBuf::from("test.rs"))
+            .unwrap();
+
+        let reader = units.iter().find(|u| u.id == "reader").unwrap();
+        assert!(reader.reads.contains(&"x".to_string()));
+        assert!(reader.reads.contains(&"y".to_string()));
+        assert!(reader.writes.is_empty());
+
+        let writer = units.iter().find(|u| u.id == "writer").unwrap();
+        assert!(writer.writes.contains(&"x".to_string()));
+        assert!(writer.writes.contains(&"y".to_string()));
+        assert!(writer.reads.contains(&"z".to_string()));
     }
 }

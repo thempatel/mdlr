@@ -23,6 +23,7 @@ Configure thresholds for each metric. Values below a threshold receive that buck
 
 ```yaml
 thresholds:
+  # Structural metrics
   dag_density:
     excellent: 0.5
     good: 1.0
@@ -52,6 +53,44 @@ thresholds:
     good: 1.0
     fair: 2.0
     poor: 3.0
+
+  # Complexity metrics
+  function_size:
+    excellent: 20
+    good: 50
+    fair: 100
+    poor: 200
+
+  params:
+    excellent: 3
+    good: 5
+    fair: 7
+    poor: 10
+
+  cyclomatic:
+    excellent: 5
+    good: 10
+    fair: 20
+    poor: 30
+
+  # Impl metrics
+  methods_per_impl:
+    excellent: 5
+    good: 10
+    fair: 15
+    poor: 25
+
+  traits_per_type:
+    excellent: 3
+    good: 5
+    fair: 8
+    poor: 12
+
+  lcom:
+    excellent: 0.2
+    good: 0.4
+    fair: 0.6
+    poor: 0.8
 ```
 
 ### Display Mode
@@ -73,6 +112,8 @@ display:
 
 The default thresholds are based on empirical observations of healthy codebases:
 
+### Structural Metrics
+
 | Metric | Excellent | Good | Fair | Poor | Critical |
 |--------|-----------|------|------|------|----------|
 | dag_density | < 0.5 | < 1.0 | < 1.5 | < 2.0 | >= 2.0 |
@@ -80,6 +121,22 @@ The default thresholds are based on empirical observations of healthy codebases:
 | fan_in_mean | < 0.5 | < 1.0 | < 2.0 | < 3.0 | >= 3.0 |
 | fan_out_max | < 3 | < 5 | < 8 | < 12 | >= 12 |
 | fan_out_mean | < 0.5 | < 1.0 | < 2.0 | < 3.0 | >= 3.0 |
+
+### Complexity Metrics
+
+| Metric | Excellent | Good | Fair | Poor | Critical |
+|--------|-----------|------|------|------|----------|
+| function_size | < 20 | < 50 | < 100 | < 200 | >= 200 |
+| params | < 3 | < 5 | < 7 | < 10 | >= 10 |
+| cyclomatic | < 5 | < 10 | < 20 | < 30 | >= 30 |
+
+### Impl Metrics
+
+| Metric | Excellent | Good | Fair | Poor | Critical |
+|--------|-----------|------|------|------|----------|
+| methods_per_impl | < 5 | < 10 | < 15 | < 25 | >= 25 |
+| traits_per_type | < 3 | < 5 | < 8 | < 12 | >= 12 |
+| lcom | < 0.2 | < 0.4 | < 0.6 | < 0.8 | >= 0.8 |
 
 ## Example Configuration
 

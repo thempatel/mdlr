@@ -5,7 +5,7 @@ use mdlr::cli::{Cli, Command, OutputFormat};
 use mdlr::config;
 use mdlr::extract::{extractor_for_path, Extractor};
 use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
-use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, MetricsDisplay, TagMetrics};
+use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, ImplMetrics, MetricsDisplay, TagMetrics};
 use mdlr::walk::SourceWalker;
 use std::collections::HashSet;
 use std::env;
@@ -152,6 +152,7 @@ fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) ->
     let graph = build_graph(all_units);
     let metrics = mdlr::metrics::compute(&graph);
     let complexity = ComplexityMetrics::compute(&graph);
+    let impl_metrics = ImplMetrics::compute(&graph);
     // Load tags with staged changes overlaid
     let semantic_tags = store.load_tags_with_staged()?;
     let has_staged = store.has_staged_tags();
@@ -175,6 +176,11 @@ fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) ->
             if complexity.has_functions() {
                 println!();
                 print!("{}", complexity);
+            }
+
+            if impl_metrics.has_impls() {
+                println!();
+                print!("{}", impl_metrics);
             }
 
             if tag_metrics.has_tags() {
@@ -306,6 +312,21 @@ fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) ->
                             "max": complexity.cyclomatic.max,
                             "mean": complexity.cyclomatic.mean,
                             "p90": complexity.cyclomatic.p90,
+                        },
+                    },
+                    "impl": {
+                        "methods_per_impl": {
+                            "max": impl_metrics.methods_per_impl.max,
+                            "mean": impl_metrics.methods_per_impl.mean,
+                            "p90": impl_metrics.methods_per_impl.p90,
+                        },
+                        "traits_per_type": {
+                            "max": impl_metrics.traits_per_type.max,
+                            "mean": impl_metrics.traits_per_type.mean,
+                        },
+                        "lcom": {
+                            "max": impl_metrics.lcom.max,
+                            "mean": impl_metrics.lcom.mean,
                         },
                     },
                     "semantic_tags": {

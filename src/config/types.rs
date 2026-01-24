@@ -107,6 +107,12 @@ pub struct ThresholdsConfig {
     pub params: MetricThresholds,
     #[serde(default = "default_cyclomatic")]
     pub cyclomatic: MetricThresholds,
+    #[serde(default = "default_methods_per_impl")]
+    pub methods_per_impl: MetricThresholds,
+    #[serde(default = "default_traits_per_type")]
+    pub traits_per_type: MetricThresholds,
+    #[serde(default = "default_lcom")]
+    pub lcom: MetricThresholds,
 }
 
 fn default_dag_density() -> MetricThresholds {
@@ -181,6 +187,34 @@ fn default_cyclomatic() -> MetricThresholds {
     }
 }
 
+fn default_methods_per_impl() -> MetricThresholds {
+    MetricThresholds {
+        excellent: 5.0,
+        good: 10.0,
+        fair: 15.0,
+        poor: 25.0,
+    }
+}
+
+fn default_traits_per_type() -> MetricThresholds {
+    MetricThresholds {
+        excellent: 3.0,
+        good: 5.0,
+        fair: 8.0,
+        poor: 12.0,
+    }
+}
+
+fn default_lcom() -> MetricThresholds {
+    // LCOM is normalized 0-1, higher = less cohesive
+    MetricThresholds {
+        excellent: 0.2,
+        good: 0.4,
+        fair: 0.6,
+        poor: 0.8,
+    }
+}
+
 impl Default for ThresholdsConfig {
     fn default() -> Self {
         Self {
@@ -192,6 +226,9 @@ impl Default for ThresholdsConfig {
             function_size: default_function_size(),
             params: default_params(),
             cyclomatic: default_cyclomatic(),
+            methods_per_impl: default_methods_per_impl(),
+            traits_per_type: default_traits_per_type(),
+            lcom: default_lcom(),
         }
     }
 }

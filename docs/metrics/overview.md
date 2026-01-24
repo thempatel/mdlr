@@ -4,11 +4,34 @@ mdlr computes structural metrics that help you understand the modularity and cou
 
 ## Available Metrics
 
+### Structural Metrics
+
 | Metric | Description |
 |--------|-------------|
 | [DAG Density](dag-density.md) | How connected the dependency graph is relative to a minimal tree |
 | [Fan-In](fan-in.md) | How many units depend on each unit |
 | [Fan-Out](fan-out.md) | How many units each unit depends on |
+
+### Complexity Metrics
+
+| Metric | Description |
+|--------|-------------|
+| [Function Size](complexity.md#function-size) | Lines of code per function |
+| [Parameter Count](complexity.md#parameter-count) | Number of parameters per function |
+| [Cyclomatic Complexity](complexity.md#cyclomatic-complexity) | Number of decision paths through a function |
+
+### Impl Metrics
+
+| Metric | Description |
+|--------|-------------|
+| [Methods per Impl](impl-metrics.md#methods-per-impl) | Number of methods in each impl block |
+| [Traits per Type](impl-metrics.md#traits-per-type) | How many traits each type implements |
+| [LCOM](impl-metrics.md#lcom-lack-of-cohesion-of-methods) | Lack of Cohesion of Methods - how related methods are |
+
+### Semantic Metrics
+
+| Metric | Description |
+|--------|-------------|
 | [Tag Coverage](tag-coverage.md) | Percentage of units with semantic tags |
 
 ## How Metrics Are Computed

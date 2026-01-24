@@ -34,6 +34,15 @@ pub struct Unit {
     /// Number of branch points (if/else/match arms/loops) for cyclomatic complexity
     #[serde(default)]
     pub branches: usize,
+    /// Parent unit ID (e.g., impl block for methods)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// For impl blocks: the trait being implemented (if any)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impl_trait: Option<String>,
+    /// For impl blocks: the type being implemented
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impl_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
