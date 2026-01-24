@@ -103,6 +103,8 @@ fn extract_from_node(node: Node, ctx: &mut ExtractionContext, units: &mut Vec<Un
 fn extract_function(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
     let name = get_node_name(node, ctx.source)?;
     let calls = extract_calls(node, ctx.source);
+    let params = count_parameters(node);
+    let branches = count_branches(node);
 
     Some(Unit {
         id: ctx.qualified_name(&name),
@@ -113,6 +115,8 @@ fn extract_function(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
         writes: Vec::new(),
         calls,
         tags: Vec::new(),
+        params,
+        branches,
     })
 }
 
@@ -128,6 +132,8 @@ fn extract_struct(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
         writes: Vec::new(),
         calls: Vec::new(),
         tags: Vec::new(),
+        params: 0,
+        branches: 0,
     })
 }
 
@@ -143,6 +149,8 @@ fn extract_trait(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
         writes: Vec::new(),
         calls: Vec::new(),
         tags: Vec::new(),
+        params: 0,
+        branches: 0,
     })
 }
 
@@ -168,6 +176,8 @@ fn extract_impl(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
         writes: Vec::new(),
         calls: Vec::new(),
         tags: Vec::new(),
+        params: 0,
+        branches: 0,
     })
 }
 
@@ -228,6 +238,74 @@ fn extract_callable_name(node: Node, source: &str) -> String {
             }
         }
         _ => String::new(),
+    }
+}
+
+/// Count the number of parameters in a function
+fn count_parameters(node: Node) -> usize {
+    let Some(params_node) = node.child_by_field_name("parameters") else {
+        return 0;
+    };
+
+    let mut count = 0;
+    for child in params_node.children(&mut params_node.walk()) {
+        // Count parameter nodes (excluding self parameters for methods)
+        if child.kind() == "parameter" {
+            count += 1;
+        } else if child.kind() == "self_parameter" {
+            // Don't count self/&self/&mut self as a parameter
+        }
+    }
+    count
+}
+
+/// Count branch points for cyclomatic complexity
+/// Counts: if, else if, match arms, while, for, loop, && and ||
+fn count_branches(node: Node) -> usize {
+    let mut count = 0;
+    count_branches_recursive(node, &mut count);
+    count
+}
+
+fn count_branches_recursive(node: Node, count: &mut usize) {
+    match node.kind() {
+        "if_expression" => {
+            // Count the if itself
+            *count += 1;
+        }
+        "match_expression" => {
+            // Count each match arm (minus 1 since one path is the default)
+            let mut arm_count = 0;
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "match_block" {
+                    for arm in child.children(&mut child.walk()) {
+                        if arm.kind() == "match_arm" {
+                            arm_count += 1;
+                        }
+                    }
+                }
+            }
+            // Each arm beyond the first adds a branch
+            if arm_count > 0 {
+                *count += arm_count - 1;
+            }
+        }
+        "while_expression" | "for_expression" | "loop_expression" => {
+            *count += 1;
+        }
+        "binary_expression" => {
+            // Check for && or || operators
+            for child in node.children(&mut node.walk()) {
+                if child.kind() == "&&" || child.kind() == "||" {
+                    *count += 1;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    for child in node.children(&mut node.walk()) {
+        count_branches_recursive(child, count);
     }
 }
 
@@ -358,5 +436,81 @@ fn chained() {
         assert!(calls.contains(&"calls".to_string()));
         // Should NOT contain the full multi-line expression
         assert!(!calls.iter().any(|c| c.contains("content")));
+    }
+
+    #[test]
+    fn test_extract_params() {
+        let extractor = RustExtractor::new().unwrap();
+        let source = r#"
+fn no_params() {}
+fn one_param(a: i32) {}
+fn two_params(a: i32, b: String) {}
+fn with_self(&self, x: i32) {}
+"#;
+        let units = extractor
+            .extract(source, &PathBuf::from("test.rs"))
+            .unwrap();
+
+        assert_eq!(units.len(), 4);
+        assert_eq!(units[0].params, 0);
+        assert_eq!(units[1].params, 1);
+        assert_eq!(units[2].params, 2);
+        assert_eq!(units[3].params, 1); // self doesn't count
+    }
+
+    #[test]
+    fn test_extract_branches() {
+        let extractor = RustExtractor::new().unwrap();
+        let source = r#"
+fn simple() {
+    let x = 1;
+}
+
+fn with_if(x: i32) {
+    if x > 0 {
+        println!("positive");
+    }
+}
+
+fn with_if_else(x: i32) {
+    if x > 0 {
+        println!("positive");
+    } else {
+        println!("non-positive");
+    }
+}
+
+fn with_match(x: Option<i32>) {
+    match x {
+        Some(v) => println!("{}", v),
+        None => println!("none"),
+    }
+}
+
+fn with_loop() {
+    for i in 0..10 {
+        while true {
+            break;
+        }
+    }
+}
+
+fn with_and_or(a: bool, b: bool, c: bool) {
+    if a && b || c {
+        println!("complex");
+    }
+}
+"#;
+        let units = extractor
+            .extract(source, &PathBuf::from("test.rs"))
+            .unwrap();
+
+        assert_eq!(units.len(), 6);
+        assert_eq!(units[0].branches, 0, "simple should have 0 branches");
+        assert_eq!(units[1].branches, 1, "with_if should have 1 branch");
+        assert_eq!(units[2].branches, 1, "with_if_else should have 1 branch (else doesn't add)");
+        assert_eq!(units[3].branches, 1, "with_match with 2 arms should have 1 branch");
+        assert_eq!(units[4].branches, 2, "with_loop should have 2 branches (for + while)");
+        assert_eq!(units[5].branches, 3, "with_and_or should have 3 branches (if + && + ||)");
     }
 }

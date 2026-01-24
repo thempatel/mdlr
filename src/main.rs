@@ -5,7 +5,7 @@ use mdlr::cli::{Cli, Command, OutputFormat};
 use mdlr::config;
 use mdlr::extract::{extractor_for_path, Extractor};
 use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
-use mdlr::metrics::{BucketedMetrics, MetricsDisplay, TagMetrics};
+use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, MetricsDisplay, TagMetrics};
 use mdlr::walk::SourceWalker;
 use std::collections::HashSet;
 use std::env;
@@ -151,6 +151,7 @@ fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) ->
 
     let graph = build_graph(all_units);
     let metrics = mdlr::metrics::compute(&graph);
+    let complexity = ComplexityMetrics::compute(&graph);
     // Load tags with staged changes overlaid
     let semantic_tags = store.load_tags_with_staged()?;
     let has_staged = store.has_staged_tags();
@@ -170,6 +171,11 @@ fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) ->
             println!();
             let display = MetricsDisplay::new(&metrics, &config);
             print!("{}", display);
+
+            if complexity.has_functions() {
+                println!();
+                print!("{}", complexity);
+            }
 
             if tag_metrics.has_tags() {
                 println!();
@@ -284,6 +290,22 @@ fn handle_check(filter_path: Option<&Path>, save: bool, format: OutputFormat) ->
                         "mean": {
                             "value": bucketed.fan_out.mean.value,
                             "bucket": bucketed.fan_out.mean.bucket,
+                        },
+                    },
+                    "complexity": {
+                        "size": {
+                            "max": complexity.size.max,
+                            "mean": complexity.size.mean,
+                            "p90": complexity.size.p90,
+                        },
+                        "params": {
+                            "max": complexity.params.max,
+                            "mean": complexity.params.mean,
+                        },
+                        "cyclomatic": {
+                            "max": complexity.cyclomatic.max,
+                            "mean": complexity.cyclomatic.mean,
+                            "p90": complexity.cyclomatic.p90,
                         },
                     },
                     "semantic_tags": {

@@ -28,6 +28,12 @@ pub struct Unit {
     pub writes: Vec<String>,
     pub calls: Vec<String>,
     pub tags: Vec<String>,
+    /// Number of parameters (for functions)
+    #[serde(default)]
+    pub params: usize,
+    /// Number of branch points (if/else/match arms/loops) for cyclomatic complexity
+    #[serde(default)]
+    pub branches: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

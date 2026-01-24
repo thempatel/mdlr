@@ -424,6 +424,8 @@ mod tests {
             writes: vec![],
             calls: vec![],
             tags: vec![],
+            params: 0,
+            branches: 0,
         }
     }
 

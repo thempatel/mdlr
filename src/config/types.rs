@@ -101,6 +101,12 @@ pub struct ThresholdsConfig {
     pub fan_out_max: MetricThresholds,
     #[serde(default = "default_fan_out_mean")]
     pub fan_out_mean: MetricThresholds,
+    #[serde(default = "default_function_size")]
+    pub function_size: MetricThresholds,
+    #[serde(default = "default_params")]
+    pub params: MetricThresholds,
+    #[serde(default = "default_cyclomatic")]
+    pub cyclomatic: MetricThresholds,
 }
 
 fn default_dag_density() -> MetricThresholds {
@@ -148,6 +154,33 @@ fn default_fan_out_mean() -> MetricThresholds {
     }
 }
 
+fn default_function_size() -> MetricThresholds {
+    MetricThresholds {
+        excellent: 20.0,
+        good: 50.0,
+        fair: 100.0,
+        poor: 200.0,
+    }
+}
+
+fn default_params() -> MetricThresholds {
+    MetricThresholds {
+        excellent: 3.0,
+        good: 5.0,
+        fair: 7.0,
+        poor: 10.0,
+    }
+}
+
+fn default_cyclomatic() -> MetricThresholds {
+    MetricThresholds {
+        excellent: 5.0,
+        good: 10.0,
+        fair: 20.0,
+        poor: 30.0,
+    }
+}
+
 impl Default for ThresholdsConfig {
     fn default() -> Self {
         Self {
@@ -156,6 +189,9 @@ impl Default for ThresholdsConfig {
             fan_in_mean: default_fan_in_mean(),
             fan_out_max: default_fan_out_max(),
             fan_out_mean: default_fan_out_mean(),
+            function_size: default_function_size(),
+            params: default_params(),
+            cyclomatic: default_cyclomatic(),
         }
     }
 }

@@ -32,6 +32,8 @@ mod tests {
             writes: vec![],
             calls: vec!["test::bar".to_string()],
             tags: vec![],
+            params: 0,
+            branches: 0,
         });
         graph.add_edge(Edge {
             from: "test::foo".to_string(),
