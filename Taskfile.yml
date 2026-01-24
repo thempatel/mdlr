@@ -6,6 +6,10 @@ tasks:
     cmds:
       - task: build
 
+  run:
+    deps: [build]
+    cmd: mdlr {{.CLI_ARGS}}
+
   build:
     vars:
       MODE: '{{.MODE | default "debug"}}'
