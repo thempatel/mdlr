@@ -19,6 +19,6 @@ tasks:
       - ln -sf ../target/debug/mdlr .
 
   install:
-    dir: '{{.ROOT_DIR}}'
+    dir: "{{.ROOT_DIR}}"
     cmds:
-      - cargo install --root $HOME/.local
+      - cargo install --path . --root $HOME/.local
