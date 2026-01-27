@@ -1,5 +1,6 @@
 use crate::extract::types::Extractor;
 use crate::graph::{Span, Unit, UnitKind};
+use crate::resolve::ResolutionContext;
 use anyhow::Result;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
@@ -23,7 +24,12 @@ impl Extractor for RustExtractor {
         "rust"
     }
 
-    fn extract(&self, source: &str, path: &Path) -> Result<Vec<Unit>> {
+    fn extract(
+        &self,
+        source: &str,
+        path: &Path,
+        resolution_ctx: Option<&ResolutionContext>,
+    ) -> Result<Vec<Unit>> {
         let mut parser = Parser::new();
         parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
 
@@ -31,12 +37,20 @@ impl Extractor for RustExtractor {
             .parse(source, None)
             .ok_or_else(|| anyhow::anyhow!("Failed to parse source"))?;
 
+        // Get the crate name and module path for this file if resolution context is available
+        let (crate_name, crate_module_path) = resolution_ctx
+            .and_then(|ctx| ctx.file_to_module(path))
+            .unzip();
+
         let mut units = Vec::new();
         let mut context = ExtractionContext {
             source,
             path,
             module_path: Vec::new(),
             current_impl: None,
+            resolution_ctx,
+            crate_name,
+            crate_module_path,
         };
 
         extract_from_node(tree.root_node(), &mut context, &mut units);
@@ -51,24 +65,40 @@ struct ExtractionContext<'a> {
     module_path: Vec<String>,
     /// Current impl block ID (if inside an impl)
     current_impl: Option<String>,
+    /// Resolution context for resolving calls to fully qualified names
+    resolution_ctx: Option<&'a ResolutionContext>,
+    /// The crate name this file belongs to (if resolution context is available)
+    crate_name: Option<String>,
+    /// The module path within the crate (if resolution context is available)
+    crate_module_path: Option<Vec<String>>,
 }
 
 impl<'a> ExtractionContext<'a> {
+    /// Generate a qualified name for a unit.
+    ///
+    /// When resolution context is available, uses crate-based naming:
+    ///   "my_crate::module::impl Foo::method"
+    ///
+    /// Without resolution context, uses file-based naming:
+    ///   "src/foo.rs::module::impl Foo::method"
     fn qualified_name(&self, name: &str) -> String {
         let mut parts = Vec::new();
 
-        // Add module path if present
+        // Add module path if present (from inline mod declarations)
         if !self.module_path.is_empty() {
             parts.push(self.module_path.join("::"));
         }
 
         // Add parent impl block if inside one (for methods)
         if let Some(ref impl_name) = self.current_impl {
-            // Extract just the impl part without file prefix (e.g., "impl Foo" from "src/foo.rs::impl Foo")
-            // We split only once at the first "::" to separate file path from impl name
-            if let Some(idx) = impl_name.find("::") {
+            // Extract just the impl part without prefix
+            // e.g., "my_crate::foo::impl Foo" -> "impl Foo"
+            // or "src/foo.rs::impl Foo" -> "impl Foo"
+            if let Some(idx) = impl_name.rfind("::impl ") {
                 let impl_local = &impl_name[idx + 2..];
-                // Check if it starts with "impl " to avoid double-nesting for nested modules
+                parts.push(impl_local.to_string());
+            } else if let Some(idx) = impl_name.find("::") {
+                let impl_local = &impl_name[idx + 2..];
                 if impl_local.starts_with("impl ") {
                     parts.push(impl_local.to_string());
                 }
@@ -78,8 +108,39 @@ impl<'a> ExtractionContext<'a> {
         parts.push(name.to_string());
 
         let local_name = parts.join("::");
-        // Prefix with file path to ensure global uniqueness
-        format!("{}::{}", self.path.display(), local_name)
+
+        // Use crate-based naming if resolution context is available
+        if let (Some(crate_name), Some(crate_module)) = (&self.crate_name, &self.crate_module_path) {
+            // Build the full crate path: crate_name::module::local_name
+            // Skip "crate" from module path since we use the actual crate name
+            let module_parts: Vec<&str> = crate_module
+                .iter()
+                .filter(|s| *s != "crate")
+                .map(|s| s.as_str())
+                .collect();
+
+            if module_parts.is_empty() {
+                format!("{}::{}", crate_name, local_name)
+            } else {
+                format!("{}::{}::{}", crate_name, module_parts.join("::"), local_name)
+            }
+        } else {
+            // Fall back to file-based naming
+            format!("{}::{}", self.path.display(), local_name)
+        }
+    }
+
+    /// Resolve a call expression to a fully qualified name.
+    ///
+    /// Returns the resolved crate path if resolution succeeds,
+    /// otherwise returns the original call name.
+    fn resolve_call(&self, call: &str) -> String {
+        if let Some(ctx) = self.resolution_ctx {
+            if let Some(resolved) = ctx.resolve_call(call, self.path) {
+                return resolved;
+            }
+        }
+        call.to_string()
     }
 }
 
@@ -134,10 +195,16 @@ fn extract_from_node(node: Node, ctx: &mut ExtractionContext, units: &mut Vec<Un
 
 fn extract_function(node: Node, ctx: &ExtractionContext) -> Option<Unit> {
     let name = get_node_name(node, ctx.source)?;
-    let calls = extract_calls(node, ctx.source);
+    let raw_calls = extract_calls(node, ctx.source);
     let params = count_parameters(node);
     let branches = count_branches(node);
     let (reads, writes) = extract_field_access(node, ctx.source);
+
+    // Resolve calls to fully qualified names
+    let calls: Vec<String> = raw_calls
+        .into_iter()
+        .map(|call| ctx.resolve_call(&call))
+        .collect();
 
     Some(Unit {
         id: ctx.qualified_name(&name),
@@ -447,7 +514,7 @@ fn add(a: i32, b: i32) -> i32 {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         assert_eq!(units.len(), 2);
@@ -466,7 +533,7 @@ struct Point {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         assert_eq!(units.len(), 1);
@@ -485,7 +552,7 @@ fn caller() {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         assert_eq!(units.len(), 1);
@@ -501,7 +568,7 @@ mod inner {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         assert_eq!(units.len(), 1);
@@ -521,7 +588,7 @@ fn chained() {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         assert_eq!(units.len(), 1);
@@ -548,7 +615,7 @@ fn two_params(a: i32, b: String) {}
 fn with_self(&self, x: i32) {}
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         assert_eq!(units.len(), 4);
@@ -602,7 +669,7 @@ fn with_and_or(a: bool, b: bool, c: bool) {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         assert_eq!(units.len(), 6);
@@ -637,7 +704,7 @@ impl Foo {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         // Should have: struct Foo, impl Foo, new, get_x, set_x
@@ -668,7 +735,7 @@ impl Display for Bar {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         let impl_unit = units
@@ -698,7 +765,7 @@ impl Foo {
 }
 "#;
         let units = extractor
-            .extract(source, &PathBuf::from("test.rs"))
+            .extract(source, &PathBuf::from("test.rs"), None)
             .unwrap();
 
         let reader = units.iter().find(|u| u.id == "test.rs::impl Foo::reader").unwrap();

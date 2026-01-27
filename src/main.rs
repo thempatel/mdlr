@@ -7,6 +7,7 @@ use mdlr::config;
 use mdlr::extract::{extractor_for_path, Extractor};
 use mdlr::graph::{Edge, EdgeKind, Graph, Unit, UnitKind};
 use mdlr::metrics::{BucketedMetrics, ComplexityMetrics, ImplMetrics, TagMetrics};
+use mdlr::resolve::{CargoWorkspace, ResolutionContext};
 use mdlr::walk::SourceWalker;
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -82,6 +83,11 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
     let config = config::load()?;
     let walker = SourceWalker::new(store.root());
 
+    // Try to build a resolution context for enhanced call resolution
+    let resolution_ctx = CargoWorkspace::discover(store.root())
+        .ok()
+        .map(ResolutionContext::build);
+
     // Determine what kind of filter we have
     let filter = if let Some(target_str) = target {
         let target_path = if Path::new(target_str).is_absolute() {
@@ -151,7 +157,7 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
             } else {
                 // Cache is stale, re-extract
                 if let Some(extractor) = extractor_for_path(&file_path) {
-                    match extract_file(&file_path, &relative, extractor.as_ref()) {
+                    match extract_file(&file_path, extractor.as_ref(), resolution_ctx.as_ref()) {
                         Ok(units) => {
                             extracted_count += 1;
                             // Defer save decision until we know if file matches symbol filter
@@ -179,7 +185,7 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
             // No cache entry, extract fresh
             if let Some(extractor) = extractor_for_path(&file_path) {
                 let current_meta = get_file_metadata(&file_path)?;
-                match extract_file(&file_path, &relative, extractor.as_ref()) {
+                match extract_file(&file_path, extractor.as_ref(), resolution_ctx.as_ref()) {
                     Ok(units) => {
                         extracted_count += 1;
                         // Defer save decision until we know if file matches symbol filter
@@ -246,7 +252,7 @@ fn handle_check(target: Option<&str>, save: bool, k: i32, pretty: bool, format: 
         store.commit_staged_tags()?;
     }
 
-    let graph = build_graph(all_units);
+    let graph = build_graph(all_units, resolution_ctx.as_ref());
     let metrics = mdlr::metrics::compute(&graph);
     let complexity = ComplexityMetrics::compute(&graph);
     let impl_metrics = ImplMetrics::compute(&graph);
@@ -777,7 +783,7 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
-fn build_graph(units: Vec<Unit>) -> Graph {
+fn build_graph(units: Vec<Unit>, resolution_ctx: Option<&ResolutionContext>) -> Graph {
     let mut graph = Graph::new();
 
     // Build multiple resolution indexes for call matching
@@ -799,9 +805,9 @@ fn build_graph(units: Vec<Unit>) -> Graph {
             .or_default()
             .push(unit.id.clone());
 
-        // Extract the local part (after the file path)
-        // e.g., "src/main.rs::handle_check" -> "handle_check"
-        // e.g., "src/main.rs::impl Foo::new" -> "impl Foo::new"
+        // Extract the local part (after the first "::")
+        // For crate-based IDs: "my_crate::module::func" -> "module::func"
+        // For file-based IDs: "src/main.rs::handle_check" -> "handle_check"
         if let Some(idx) = unit.id.find("::") {
             let local = &unit.id[idx + 2..];
 
@@ -813,10 +819,14 @@ fn build_graph(units: Vec<Unit>) -> Graph {
 
             // For methods in impl blocks, also index by just the method name
             // e.g., "impl Foo::new" -> also index as "new" and "Foo::new"
-            if local.starts_with("impl ") {
+            if local.contains("::impl ") || local.starts_with("impl ") {
+                // Find the impl part and extract method name
+                let impl_start = local.find("impl ").unwrap_or(0);
+                let impl_part = &local[impl_start..];
+
                 // "impl Foo::method" -> extract "method" and "Foo::method"
-                if let Some(method_idx) = local.rfind("::") {
-                    let method_name = &local[method_idx + 2..];
+                if let Some(method_idx) = impl_part.rfind("::") {
+                    let method_name = &impl_part[method_idx + 2..];
                     name_to_ids
                         .entry(method_name.to_string())
                         .or_default()
@@ -824,9 +834,21 @@ fn build_graph(units: Vec<Unit>) -> Graph {
 
                     // Also add "Type::method" form (without "impl ")
                     // "impl Foo::method" -> "Foo::method"
-                    let type_and_method = &local[5..]; // Skip "impl "
+                    let type_and_method = &impl_part[5..]; // Skip "impl "
                     name_to_ids
                         .entry(type_and_method.to_string())
+                        .or_default()
+                        .push(unit.id.clone());
+                }
+            }
+
+            // For crate-based IDs, also index by the short name (last segment)
+            // e.g., "my_crate::module::func" -> "func"
+            if let Some(last_idx) = local.rfind("::") {
+                let short_name = &local[last_idx + 2..];
+                if !short_name.is_empty() && !short_name.starts_with("impl ") {
+                    name_to_ids
+                        .entry(short_name.to_string())
                         .or_default()
                         .push(unit.id.clone());
                 }
@@ -839,8 +861,23 @@ fn build_graph(units: Vec<Unit>) -> Graph {
         let caller_file = unit.file.to_string_lossy();
 
         for call in &unit.calls {
-            // Try to resolve the call to a full ID
-            let resolved = resolve_call(call, &caller_file, &unit_ids, &name_to_ids);
+            // First check if the call is already a fully resolved crate path that matches a unit ID
+            // This handles calls that were resolved during extraction
+            if unit_ids.contains(call) {
+                if call != &unit.id {
+                    graph.add_edge(Edge {
+                        from: unit.id.clone(),
+                        to: call.clone(),
+                        kind: EdgeKind::Calls,
+                    });
+                }
+                continue;
+            }
+
+            // Try resolution context first (if available), then fall back to heuristic resolution
+            let resolved = resolution_ctx
+                .and_then(|ctx| resolve_call_with_context(call, &unit.file, ctx, &unit_ids))
+                .or_else(|| resolve_call(call, &caller_file, &unit_ids, &name_to_ids));
 
             if let Some(target_id) = resolved {
                 // Don't create self-loops
@@ -937,7 +974,74 @@ fn resolve_call(
     None
 }
 
-fn extract_file(abs_path: &Path, rel_path: &Path, extractor: &dyn Extractor) -> Result<Vec<Unit>> {
+/// Resolve a call using the semantic resolution context.
+///
+/// This uses Cargo workspace information, module graphs, and use statements
+/// to provide more accurate resolution than heuristic matching.
+fn resolve_call_with_context(
+    call: &str,
+    caller_file: &Path,
+    ctx: &ResolutionContext,
+    unit_ids: &HashSet<String>,
+) -> Option<String> {
+    // First, try to resolve using the semantic context
+    let resolved_path = ctx.resolve_call(call, caller_file)?;
+
+    // Now try to map the resolved path back to a unit ID
+    // The resolved path looks like "crate_name::module::item"
+    // but our unit IDs look like "src/file.rs::item"
+
+    // Strategy 1: Check if resolved path matches any unit ID directly
+    if unit_ids.contains(&resolved_path) {
+        return Some(resolved_path);
+    }
+
+    // Strategy 2: Try to find the unit by matching the item name
+    // Extract the item name from the resolved path
+    let item_name = resolved_path.rsplit("::").next()?;
+
+    // Look for units that end with this item name
+    for unit_id in unit_ids {
+        // Check if the unit ID ends with "::item_name"
+        if unit_id.ends_with(&format!("::{}", item_name)) {
+            // If there's a file path in the resolved path, try to match it
+            // For now, just return the first match (could be improved with better heuristics)
+            return Some(unit_id.clone());
+        }
+    }
+
+    // Strategy 3: For cross-crate resolution, find the matching crate's files
+    // The resolution context knows which crate each file belongs to
+    if let Some((resolved_crate, _)) = ctx.file_to_module(caller_file) {
+        // If the resolved path starts with a different crate, find that crate's units
+        let path_parts: Vec<&str> = resolved_path.split("::").collect();
+        if !path_parts.is_empty() {
+            let target_crate = path_parts[0];
+            if target_crate != resolved_crate && target_crate != "crate" && target_crate != "std" {
+                // Look for units in that crate
+                for unit_id in unit_ids {
+                    // Extract crate info from unit ID's file path
+                    // This is a heuristic - check if the file path contains the crate name
+                    if unit_id.contains(&format!("{}/", target_crate.replace('_', "-")))
+                        || unit_id.contains(&format!("{}/", target_crate))
+                    {
+                        if unit_id.ends_with(&format!("::{}", item_name)) {
+                            return Some(unit_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn extract_file(
+    abs_path: &Path,
+    extractor: &dyn Extractor,
+    resolution_ctx: Option<&ResolutionContext>,
+) -> Result<Vec<Unit>> {
     let source = fs::read_to_string(abs_path)?;
-    extractor.extract(&source, rel_path)
+    extractor.extract(&source, abs_path, resolution_ctx)
 }
