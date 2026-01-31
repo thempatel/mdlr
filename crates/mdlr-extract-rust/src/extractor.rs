@@ -527,6 +527,98 @@ fn extract_field_access(
     (reads, writes)
 }
 
+/// Walk down the "function" part of a call expression to find self.field accesses.
+/// Handles arbitrary chains like self.field.method1().method2().
+fn process_call_function(
+    node: Node,
+    source: &str,
+    reads: &mut Vec<String>,
+    writes: &mut Vec<String>,
+    in_assignment_lhs: bool,
+) {
+    match node.kind() {
+        "field_expression" => {
+            // This is obj.method - check what obj is
+            if let Some(value) = node.child_by_field_name("value") {
+                process_call_value(
+                    value,
+                    source,
+                    reads,
+                    writes,
+                    in_assignment_lhs,
+                );
+            }
+        }
+        "generic_function" => {
+            // This is obj.method::<T>() with turbofish syntax
+            // The function field contains the actual field_expression
+            if let Some(func) = node.child_by_field_name("function") {
+                process_call_function(
+                    func,
+                    source,
+                    reads,
+                    writes,
+                    in_assignment_lhs,
+                );
+            }
+        }
+        "scoped_identifier" | "identifier" => {
+            // Direct function call like foo() - no field access
+        }
+        _ => {}
+    }
+}
+
+/// Process the value part of a field_expression in a call chain.
+fn process_call_value(
+    value: Node,
+    source: &str,
+    reads: &mut Vec<String>,
+    writes: &mut Vec<String>,
+    in_assignment_lhs: bool,
+) {
+    match value.kind() {
+        "field_expression" => {
+            // obj is itself a field access (e.g., self.field)
+            // Process it to capture the field read
+            collect_field_access(
+                value,
+                source,
+                reads,
+                writes,
+                in_assignment_lhs,
+            );
+        }
+        "call_expression" => {
+            // obj is a method call (e.g., self.method1())
+            // Recurse to find any field access in the call chain
+            if let Some(inner_func) = value.child_by_field_name("function") {
+                process_call_function(
+                    inner_func,
+                    source,
+                    reads,
+                    writes,
+                    in_assignment_lhs,
+                );
+            }
+            // Also process arguments of the inner call
+            if let Some(args) = value.child_by_field_name("arguments") {
+                collect_field_access(
+                    args,
+                    source,
+                    reads,
+                    writes,
+                    in_assignment_lhs,
+                );
+            }
+        }
+        _ => {
+            // obj is something else (just "self", a variable, etc.)
+            // No field access to capture
+        }
+    }
+}
+
 fn collect_field_access(
     node: Node,
     source: &str,
@@ -555,8 +647,21 @@ fn collect_field_access(
             }
         }
         "call_expression" => {
-            // Skip the function child (which may be self.method) but process arguments
-            // This prevents method calls like self.resolve() from being counted as field reads
+            // Handle method calls carefully to distinguish:
+            // - self.method() -> NOT a field read (method call)
+            // - self.field.method() -> field IS a read (field access chained with method)
+            // - self.field.method1().method2() -> still a field read
+            if let Some(func) = node.child_by_field_name("function") {
+                // Walk down the call chain to find field accesses
+                process_call_function(
+                    func,
+                    source,
+                    reads,
+                    writes,
+                    in_assignment_lhs,
+                );
+            }
+            // Always process arguments
             if let Some(args) = node.child_by_field_name("arguments") {
                 collect_field_access(
                     args,
@@ -854,6 +959,101 @@ impl Foo {
         );
         assert!(
             !caller.reads.contains(&"chain".to_string()),
+            "method name should not be a read"
+        );
+    }
+
+    #[test]
+    fn test_chained_field_method_call_is_counted() {
+        let extractor = RustExtractor::new_without_context();
+        let source = r#"
+impl Foo {
+    fn reader(&self) {
+        // self.field.method() should count "field" as a read
+        self.ctx.as_ref();
+        self.data.clone();
+        let _ = self.inner.get_value();
+    }
+}
+"#;
+        let units =
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
+
+        let reader =
+            units.iter().find(|u| u.id == "test.rs::Foo::reader").unwrap();
+
+        // Fields accessed via chained method calls should be counted
+        assert!(
+            reader.reads.contains(&"ctx".to_string()),
+            "should contain 'ctx' from self.ctx.as_ref()"
+        );
+        assert!(
+            reader.reads.contains(&"data".to_string()),
+            "should contain 'data' from self.data.clone()"
+        );
+        assert!(
+            reader.reads.contains(&"inner".to_string()),
+            "should contain 'inner' from self.inner.get_value()"
+        );
+        // But NOT the method names
+        assert!(
+            !reader.reads.contains(&"as_ref".to_string()),
+            "method name should not be a read"
+        );
+        assert!(
+            !reader.reads.contains(&"clone".to_string()),
+            "method name should not be a read"
+        );
+        assert!(
+            !reader.reads.contains(&"get_value".to_string()),
+            "method name should not be a read"
+        );
+    }
+
+    #[test]
+    fn test_multi_chained_method_calls() {
+        let extractor = RustExtractor::new_without_context();
+        let source = r#"
+impl Foo {
+    fn reader(&self) {
+        // Multiple chained method calls like self.members.iter().find(...)
+        self.members.iter().find(|x| x.name == "test");
+        self.items.iter().map(|x| x.clone()).collect::<Vec<_>>();
+    }
+}
+"#;
+        let units =
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
+
+        let reader =
+            units.iter().find(|u| u.id == "test.rs::Foo::reader").unwrap();
+
+        // Fields accessed through chained method calls should be counted
+        assert!(
+            reader.reads.contains(&"members".to_string()),
+            "should contain 'members' from self.members.iter().find(...), got {:?}",
+            reader.reads
+        );
+        assert!(
+            reader.reads.contains(&"items".to_string()),
+            "should contain 'items' from self.items.iter().map(...).collect(...), got {:?}",
+            reader.reads
+        );
+        // But NOT the method names
+        assert!(
+            !reader.reads.contains(&"iter".to_string()),
+            "method name should not be a read"
+        );
+        assert!(
+            !reader.reads.contains(&"find".to_string()),
+            "method name should not be a read"
+        );
+        assert!(
+            !reader.reads.contains(&"map".to_string()),
+            "method name should not be a read"
+        );
+        assert!(
+            !reader.reads.contains(&"collect".to_string()),
             "method name should not be a read"
         );
     }
