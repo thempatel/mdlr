@@ -1,0 +1,15 @@
+[package]
+name = "mdlr-extract-rust"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mdlr-core = { workspace = true }
+anyhow = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-rust = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

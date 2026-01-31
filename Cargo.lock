@@ -417,15 +417,48 @@ dependencies = [
  "clap",
  "dirs",
  "ignore",
+ "mdlr-core",
+ "mdlr-extract-rust",
+ "mdlr-metrics",
  "serde",
  "serde_json",
  "serde_yaml",
  "tabwriter",
  "tempfile",
+]
+
+[[package]]
+name = "mdlr-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
+]
+
+[[package]]
+name = "mdlr-extract-rust"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mdlr-core",
+ "serde",
+ "tempfile",
  "toml",
  "tree-sitter",
  "tree-sitter-rust",
+]
+
+[[package]]
+name = "mdlr-metrics"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mdlr-core",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]

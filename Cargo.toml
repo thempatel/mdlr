@@ -1,22 +1,34 @@
-[package]
-name = "mdlr"
+[workspace]
+resolver = "2"
+members = [
+    "crates/mdlr-core",
+    "crates/mdlr-metrics",
+    "crates/mdlr-extract-rust",
+    "crates/mdlr",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-clap = { version = "4", features = ["derive"] }
+[workspace.dependencies]
+# Internal crates
+mdlr-core = { path = "crates/mdlr-core" }
+mdlr-metrics = { path = "crates/mdlr-metrics" }
+mdlr-extract-rust = { path = "crates/mdlr-extract-rust" }
+
+# External dependencies
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tree-sitter = "0.25"
-tree-sitter-rust = "0.24"
-chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 anyhow = "1"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 serde_yaml = "0.9"
 ignore = "0.4"
 tabwriter = "1.4.1"
 toml = "0.8"
-
-[dev-dependencies]
 tempfile = "3"

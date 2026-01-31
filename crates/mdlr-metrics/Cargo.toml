@@ -1,0 +1,12 @@
+[package]
+name = "mdlr-metrics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mdlr-core = { workspace = true }
+serde = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
