@@ -197,7 +197,39 @@ impl<'a> ExtractionContext<'a> {
     }
 
     /// Generate a qualified struct ID for the parent pointer.
+    ///
+    /// When resolution context is available, attempts to resolve the struct name
+    /// to its canonical definition location. This ensures that methods defined
+    /// in separate impl blocks (potentially in different files) all point to
+    /// the same parent struct ID.
     fn qualified_struct_id(&self, struct_name: &str) -> String {
+        // Try to resolve the struct name to its definition location
+        if let (Some(ctx), Some(crate_name), Some(crate_module)) =
+            (self.resolution_ctx, &self.crate_name, &self.crate_module_path)
+        {
+            if let Some(resolved) =
+                ctx.resolve(struct_name, crate_name, crate_module)
+            {
+                // Build the canonical ID from the resolved path
+                let mut parts = vec![resolved.crate_name];
+
+                // Add module path, filtering out "crate"
+                for segment in &resolved.module_path {
+                    if segment != "crate" {
+                        parts.push(segment.clone());
+                    }
+                }
+
+                // Add the item name (struct name)
+                if !resolved.item_name.is_empty() {
+                    parts.push(resolved.item_name);
+                }
+
+                return parts.join("::");
+            }
+        }
+
+        // Fall back to the original behavior if resolution fails
         let mut parts = Vec::new();
 
         // Add module path if present (from inline mod declarations)
@@ -522,6 +554,20 @@ fn collect_field_access(
                 }
             }
         }
+        "call_expression" => {
+            // Skip the function child (which may be self.method) but process arguments
+            // This prevents method calls like self.resolve() from being counted as field reads
+            if let Some(args) = node.child_by_field_name("arguments") {
+                collect_field_access(
+                    args,
+                    source,
+                    reads,
+                    writes,
+                    in_assignment_lhs,
+                );
+            }
+            return; // Don't recurse normally, we handled the relevant children
+        }
         "assignment_expression" | "compound_assignment_expr" => {
             // Left side is a write, right side is a read
             if let Some(left) = node.child_by_field_name("left") {
@@ -765,6 +811,50 @@ fn with_match(x: Option<i32>) {
         assert_eq!(
             units[2].branches, 1,
             "with_match with 2 arms should have 1 branch"
+        );
+    }
+
+    #[test]
+    fn test_method_calls_not_counted_as_field_reads() {
+        let extractor = RustExtractor::new_without_context();
+        let source = r#"
+impl Foo {
+    fn caller(&self) {
+        // Method calls should NOT be counted as field reads
+        self.do_something();
+        self.other_method(self.field);
+        let _ = self.chain().another();
+    }
+
+    fn do_something(&self) {}
+    fn other_method(&self, x: i32) {}
+    fn chain(&self) -> &Self { self }
+    fn another(&self) {}
+}
+"#;
+        let units =
+            extractor.extract_source(source, Path::new("test.rs")).unwrap();
+
+        let caller =
+            units.iter().find(|u| u.id == "test.rs::Foo::caller").unwrap();
+
+        // Only self.field should be counted as a read, not the method names
+        assert_eq!(caller.reads.len(), 1, "should only have 1 field read");
+        assert!(
+            caller.reads.contains(&"field".to_string()),
+            "should contain 'field'"
+        );
+        assert!(
+            !caller.reads.contains(&"do_something".to_string()),
+            "method name should not be a read"
+        );
+        assert!(
+            !caller.reads.contains(&"other_method".to_string()),
+            "method name should not be a read"
+        );
+        assert!(
+            !caller.reads.contains(&"chain".to_string()),
+            "method name should not be a read"
         );
     }
 }
