@@ -13,14 +13,26 @@ tasks:
   build:
     vars:
       MODE: '{{.MODE | default "debug"}}'
+      QUIET: '{{.QUIET | default "false"}}'
     cmds:
-      - cargo build {{if eq .MODE "release"}}--release{{end}}
+      - cargo build {{if eq .MODE "release"}}--release{{end}} {{if eq .QUIET "true"}}2>/dev/null{{end}}
 
   link:
-    deps: [build]
+    vars:
+      QUIET: '{{.QUIET | default "false"}}'
+    deps:
+      - task: build
+        vars: { QUIET: "{{.QUIET}}" }
     dir: bin
     cmds:
       - ln -sf ../target/debug/mdlr .
+
+  check:
+    deps:
+      - task: link
+        vars: { QUIET: "true" }
+    cmds:
+      - mdlr check
 
   install:
     dir: "{{.ROOT_DIR}}"
