@@ -6,6 +6,8 @@ pub struct StructuralMetrics {
     pub dag_density: f64,
     pub fan_in: FanMetrics,
     pub fan_out: FanMetrics,
+    /// Hub information for each unit (units with high fan_in AND high fan_out)
+    pub hubs: HashMap<String, HubInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -13,6 +15,13 @@ pub struct FanMetrics {
     pub max: usize,
     pub mean: f64,
     pub distribution: Vec<(String, usize)>,
+}
+
+/// Hub information for a unit
+#[derive(Debug, Clone)]
+pub struct HubInfo {
+    pub fan_in: usize,
+    pub fan_out: usize,
 }
 
 impl FanMetrics {
@@ -32,7 +41,24 @@ impl FanMetrics {
     }
 }
 
+/// Default threshold for minimum fan_in to be considered a hub candidate
+pub const DEFAULT_HUB_MIN_FAN_IN: usize = 10;
+/// Default threshold for minimum fan_out to be considered a hub
+pub const DEFAULT_HUB_MIN_FAN_OUT: usize = 3;
+
 pub fn compute(graph: &Graph) -> StructuralMetrics {
+    compute_with_hub_thresholds(
+        graph,
+        DEFAULT_HUB_MIN_FAN_IN,
+        DEFAULT_HUB_MIN_FAN_OUT,
+    )
+}
+
+pub fn compute_with_hub_thresholds(
+    graph: &Graph,
+    hub_min_fan_in: usize,
+    hub_min_fan_out: usize,
+) -> StructuralMetrics {
     let node_count = graph.units.len();
     let edge_count = graph.edges.len();
 
@@ -55,10 +81,22 @@ pub fn compute(graph: &Graph) -> StructuralMetrics {
         *fan_in_counts.entry(edge.to.clone()).or_insert(0) += 1;
     }
 
+    // Build hub info for units with high fan_in AND high fan_out
+    let mut hubs: HashMap<String, HubInfo> = HashMap::new();
+    for unit in &graph.units {
+        let fan_in = *fan_in_counts.get(&unit.id).unwrap_or(&0);
+        let fan_out = *fan_out_counts.get(&unit.id).unwrap_or(&0);
+
+        if fan_in >= hub_min_fan_in && fan_out >= hub_min_fan_out {
+            hubs.insert(unit.id.clone(), HubInfo { fan_in, fan_out });
+        }
+    }
+
     StructuralMetrics {
         dag_density,
         fan_in: FanMetrics::from_counts(fan_in_counts),
         fan_out: FanMetrics::from_counts(fan_out_counts),
+        hubs,
     }
 }
 

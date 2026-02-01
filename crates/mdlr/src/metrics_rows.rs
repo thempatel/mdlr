@@ -1,10 +1,12 @@
 //! Metric row collection for CLI output.
 
+use crate::cache::Ignores;
 use crate::config::{Bucket, Config, MetricThresholds};
 use mdlr_metrics::{
-    ComplexityMetrics, FileLocMetrics, StructMetrics, StructuralMetrics,
-    TagMetrics,
+    ComplexityMetrics, FileLocMetrics, HubInfo, StructMetrics,
+    StructuralMetrics, TagMetrics,
 };
+use std::collections::HashMap;
 
 /// A metric row: (metric_name, symbol, value, bucket)
 pub type MetricRow = (String, String, String, String);
@@ -88,6 +90,52 @@ impl IntMetricSpec<'_> {
     }
 }
 
+/// Specification for collecting fan_in metric with hub filtering
+/// Only includes units that are hubs (high fan_in AND high fan_out)
+struct HubFilteredFanInSpec<'a> {
+    distribution: &'a [(String, usize)],
+    thresholds: &'a MetricThresholds,
+    hubs: &'a HashMap<String, HubInfo>,
+}
+
+impl HubFilteredFanInSpec<'_> {
+    /// Collect only hub entries (for global sorting mode)
+    fn collect_all(&self, rows: &mut Vec<ScoredRow>) {
+        for (name, value) in self.distribution {
+            // Only include if this unit is a hub
+            if self.hubs.contains_key(name) {
+                let bucket = self.thresholds.evaluate(*value as f64);
+                rows.push(ScoredRow {
+                    metric_name: "fan_in".to_string(),
+                    symbol: name.clone(),
+                    value: value.to_string(),
+                    bucket,
+                });
+            }
+        }
+    }
+
+    /// Collect with per-metric limit (for symbol filter mode)
+    /// In symbol filter mode, always show the value regardless of hub status
+    fn collect_filtered(
+        &self,
+        rows: &mut Vec<MetricRow>,
+        symbol_filter: &str,
+    ) {
+        for (name, value) in self.distribution.iter() {
+            if name == symbol_filter {
+                let bucket = self.thresholds.evaluate(*value as f64);
+                rows.push((
+                    "fan_in".to_string(),
+                    name.clone(),
+                    value.to_string(),
+                    bucket.to_string(),
+                ));
+            }
+        }
+    }
+}
+
 /// Specification for collecting a float metric
 struct FloatMetricSpec<'a> {
     name: &'static str,
@@ -143,27 +191,24 @@ impl FloatMetricSpec<'_> {
 ///
 /// The `symbol_filter` parameter, when `Some`, limits output to only the
 /// matching symbol. This is used when filtering by a specific symbol ID.
+///
+/// The `ignores` parameter filters out metrics that have been explicitly ignored.
 pub fn collect_metric_rows(
     metrics: &MetricsBundle,
     config: &Config,
     k: i32,
     symbol_filter: Option<&str>,
+    ignores: &Ignores,
 ) -> Vec<MetricRow> {
     let t = &config.thresholds;
     let m = metrics;
 
-    // Integer metrics
+    // Integer metrics (excluding fan_in which has special hub filtering)
     let int_specs = [
         IntMetricSpec {
             name: "fan_out",
             distribution: &m.structural.fan_out.distribution,
             thresholds: &t.fan_out_max,
-            min_value: 0,
-        },
-        IntMetricSpec {
-            name: "fan_in",
-            distribution: &m.structural.fan_in.distribution,
-            thresholds: &t.fan_in_max,
             min_value: 0,
         },
         IntMetricSpec {
@@ -198,6 +243,13 @@ pub fn collect_metric_rows(
         },
     ];
 
+    // Hub-filtered fan_in metric (only flags units with high fan_in AND high fan_out)
+    let fan_in_spec = HubFilteredFanInSpec {
+        distribution: &m.structural.fan_in.distribution,
+        thresholds: &t.fan_in_max,
+        hubs: &m.structural.hubs,
+    };
+
     // Float metrics
     let float_specs = [FloatMetricSpec {
         name: "lcom",
@@ -212,9 +264,14 @@ pub fn collect_metric_rows(
         for spec in &int_specs {
             spec.collect_filtered(&mut rows, filter);
         }
+        fan_in_spec.collect_filtered(&mut rows, filter);
         for spec in &float_specs {
             spec.collect_filtered(&mut rows, filter);
         }
+        // Filter out ignored metrics
+        rows.retain(|(metric, symbol, _, _)| {
+            !ignores.is_ignored(symbol, metric)
+        });
         return rows;
     }
 
@@ -223,9 +280,14 @@ pub fn collect_metric_rows(
     for spec in &int_specs {
         spec.collect_all(&mut scored_rows);
     }
+    fan_in_spec.collect_all(&mut scored_rows);
     for spec in &float_specs {
         spec.collect_all(&mut scored_rows);
     }
+
+    // Filter out ignored metrics before sorting
+    scored_rows
+        .retain(|row| !ignores.is_ignored(&row.symbol, &row.metric_name));
 
     // Sort by severity descending (worst first)
     scored_rows.sort_by(|a, b| b.severity().cmp(&a.severity()));

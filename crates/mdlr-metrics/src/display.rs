@@ -330,6 +330,7 @@ mod tests {
             dag_density: 0.419,
             fan_in: FanMetrics { max: 4, mean: 0.43, distribution: vec![] },
             fan_out: FanMetrics { max: 6, mean: 0.43, distribution: vec![] },
+            hubs: std::collections::HashMap::new(),
         }
     }
 

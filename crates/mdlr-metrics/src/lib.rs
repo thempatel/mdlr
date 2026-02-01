@@ -12,7 +12,10 @@ pub use display::{
 };
 pub use file_loc::FileLocMetrics;
 pub use struct_metrics::{LcomMetrics, MethodsPerStruct, StructMetrics};
-pub use structural::{FanMetrics, StructuralMetrics, compute};
+pub use structural::{
+    DEFAULT_HUB_MIN_FAN_IN, DEFAULT_HUB_MIN_FAN_OUT, FanMetrics, HubInfo,
+    StructuralMetrics, compute, compute_with_hub_thresholds,
+};
 pub use tags::{
     ConceptScatter, ConceptualMetrics, CrossConceptEdges, FanDistribution,
     SemanticTags, TagMetrics,

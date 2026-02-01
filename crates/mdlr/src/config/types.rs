@@ -240,6 +240,24 @@ impl ThresholdsConfig {
     }
 }
 
+/// Hub detection thresholds
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HubThresholds {
+    /// Minimum fan_in to be considered a hub candidate (default: 10)
+    pub min_fan_in: usize,
+    /// Minimum fan_out to be considered a hub (default: 3)
+    pub min_fan_out: usize,
+}
+
+impl Default for HubThresholds {
+    fn default() -> Self {
+        Self {
+            min_fan_in: mdlr_metrics::DEFAULT_HUB_MIN_FAN_IN,
+            min_fan_out: mdlr_metrics::DEFAULT_HUB_MIN_FAN_OUT,
+        }
+    }
+}
+
 /// Main configuration struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -247,6 +265,8 @@ pub struct Config {
     pub thresholds: ThresholdsConfig,
     #[serde(default)]
     pub display: DisplayConfig,
+    #[serde(default)]
+    pub hub: HubThresholds,
 }
 
 #[cfg(test)]

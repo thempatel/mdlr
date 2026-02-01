@@ -14,7 +14,9 @@ mod symbol_commands;
 mod tag_commands;
 mod walk;
 
-use cache::{CacheStore, FileCacheEntry, get_file_metadata, now_timestamp};
+use cache::{
+    CacheStore, FileCacheEntry, Ignores, get_file_metadata, now_timestamp,
+};
 use cli::{Cli, Command, MetricsCommand, OutputFormat};
 use json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
@@ -24,7 +26,8 @@ use mdlr_core::{Graph, Unit, build as build_graph};
 use mdlr_extract_rust::RustExtractor;
 use mdlr_metrics::{
     BucketedMetrics, ComplexityMetrics, FileLocMetrics, StructMetrics,
-    StructuralMetrics, TagMetrics, Thresholds, compute as compute_structural,
+    StructuralMetrics, TagMetrics, Thresholds,
+    compute_with_hub_thresholds as compute_structural,
 };
 use metrics_rows::{MetricsBundle, collect_metric_rows};
 use symbol_commands::{handle_get, handle_ls};
@@ -47,6 +50,9 @@ fn main() -> Result<()> {
         Command::Get { symbol, format } => handle_get(&symbol, format),
         Command::Tag { symbol, add, remove, clear, list, format } => {
             handle_tag(symbol, add, remove, clear, list, format)
+        }
+        Command::Ignore { metric, symbol, remove, list } => {
+            handle_ignore(metric, symbol, remove, list)
         }
     }
 }
@@ -439,11 +445,16 @@ fn save_cache_entries(
 fn compute_all_metrics(
     units: Vec<Unit>,
     store: &CacheStore,
+    config: &config::Config,
 ) -> ComputedMetrics {
     // Build graph without resolution context for now
     // (resolution is already done during extraction)
     let graph = build_graph(units, None);
-    let structural = compute_structural(&graph);
+    let structural = compute_structural(
+        &graph,
+        config.hub.min_fan_in,
+        config.hub.min_fan_out,
+    );
     let complexity = ComplexityMetrics::compute(&graph);
     let struct_metrics = StructMetrics::compute(&graph);
     let file_loc = FileLocMetrics::compute(&graph);
@@ -481,6 +492,7 @@ fn format_text_output(
     k: i32,
     pretty: bool,
     filter: &CheckFilter,
+    store: &CacheStore,
 ) -> Result<()> {
     let bundle = MetricsBundle {
         structural: &computed.structural,
@@ -490,7 +502,9 @@ fn format_text_output(
         tag_metrics: &computed.tag_metrics,
     };
     let symbol_filter = get_symbol_filter(filter);
-    let rows = collect_metric_rows(&bundle, config, k, symbol_filter);
+    let ignores = store.load_ignores().unwrap_or_default();
+    let rows =
+        collect_metric_rows(&bundle, config, k, symbol_filter, &ignores);
 
     if pretty {
         let mut tw = tabwriter::TabWriter::new(vec![]);
@@ -706,13 +720,18 @@ fn handle_check(
     }
 
     // Build full graph with all units to capture all edges (including callers)
-    let computed = compute_all_metrics(units, &ctx.store);
+    let computed = compute_all_metrics(units, &ctx.store, &ctx.config);
 
     // Filter is applied at output time, not graph construction time
     match format {
-        OutputFormat::Text => {
-            format_text_output(&computed, &ctx.config, k, pretty, &filter)
-        }
+        OutputFormat::Text => format_text_output(
+            &computed,
+            &ctx.config,
+            k,
+            pretty,
+            &filter,
+            &ctx.store,
+        ),
         OutputFormat::Json => format_json_output(
             &computed,
             &ctx.config,
@@ -756,4 +775,112 @@ fn handle_tag(
     }
 
     handle_tag_show(&store, &symbol, format)
+}
+
+/// Valid metric names that can be ignored
+const VALID_METRICS: &[&str] = &[
+    "fan_in",
+    "fan_out",
+    "function_size",
+    "params",
+    "cyclomatic",
+    "methods_per_struct",
+    "lcom",
+    "file_loc",
+];
+
+fn handle_ignore(
+    metric: Option<String>,
+    symbol: Option<String>,
+    remove: bool,
+    list: bool,
+) -> Result<()> {
+    let store = CacheStore::open(Path::new("."))?;
+
+    if list {
+        return handle_ignore_list(&store);
+    }
+
+    let metric = metric.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Metric name is required. Valid metrics: {}",
+            VALID_METRICS.join(", ")
+        )
+    })?;
+
+    // Validate metric name
+    if !VALID_METRICS.contains(&metric.as_str()) {
+        bail!(
+            "Unknown metric '{}'. Valid metrics: {}",
+            metric,
+            VALID_METRICS.join(", ")
+        );
+    }
+
+    let symbol =
+        symbol.ok_or_else(|| anyhow::anyhow!("Symbol ID is required."))?;
+
+    if remove {
+        handle_ignore_remove(&store, &metric, &symbol)
+    } else {
+        handle_ignore_add(&store, &metric, &symbol)
+    }
+}
+
+fn handle_ignore_list(store: &CacheStore) -> Result<()> {
+    let ignores = store.load_ignores()?;
+
+    if ignores.is_empty() {
+        println!("No ignores configured.");
+        return Ok(());
+    }
+
+    // Collect and sort for consistent output
+    let mut entries: Vec<_> = ignores.ignores.iter().collect();
+    entries.sort_by_key(|(symbol, _)| *symbol);
+
+    for (symbol, metrics) in entries {
+        for metric in metrics {
+            println!("{}\t{}", metric, symbol);
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_ignore_add(
+    store: &CacheStore,
+    metric: &str,
+    symbol: &str,
+) -> Result<()> {
+    let mut ignores = store.load_ignores()?;
+
+    if ignores.is_ignored(symbol, metric) {
+        println!("Already ignoring {} for {}", metric, symbol);
+        return Ok(());
+    }
+
+    ignores.add(symbol, metric);
+    store.save_ignores(&ignores)?;
+    println!("Ignoring {} for {}", metric, symbol);
+
+    Ok(())
+}
+
+fn handle_ignore_remove(
+    store: &CacheStore,
+    metric: &str,
+    symbol: &str,
+) -> Result<()> {
+    let mut ignores = store.load_ignores()?;
+
+    if !ignores.remove(symbol, metric) {
+        println!("No ignore found for {} on {}", metric, symbol);
+        return Ok(());
+    }
+
+    store.save_ignores(&ignores)?;
+    println!("Removed ignore for {} on {}", metric, symbol);
+
+    Ok(())
 }

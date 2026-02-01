@@ -76,6 +76,19 @@ pub enum Command {
         #[arg(long, default_value = "text")]
         format: OutputFormat,
     },
+    /// Ignore specific metrics for specific symbols to reduce false positives
+    Ignore {
+        /// Metric name to ignore (e.g., "fan_in", "lcom")
+        metric: Option<String>,
+        /// Symbol ID to ignore the metric for
+        symbol: Option<String>,
+        /// Remove an existing ignore instead of adding one
+        #[arg(long)]
+        remove: bool,
+        /// List all ignores
+        #[arg(long)]
+        list: bool,
+    },
 }
 
 #[derive(Subcommand)]
