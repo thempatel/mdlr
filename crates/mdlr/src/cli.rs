@@ -28,6 +28,9 @@ pub enum Command {
         /// Output format
         #[arg(long, default_value = "text")]
         format: OutputFormat,
+        /// Override base commit/branch for git-based change detection
+        #[arg(long)]
+        base: Option<String>,
     },
     /// List supported metrics with descriptions
     Metrics {

@@ -20,6 +20,7 @@ chrono = { workspace = true }
 dirs = { workspace = true }
 ignore = { workspace = true }
 tabwriter = { workspace = true }
+git2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

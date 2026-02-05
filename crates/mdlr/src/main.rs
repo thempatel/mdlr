@@ -3,20 +3,20 @@ use clap::Parser;
 use std::collections::HashSet;
 use std::env;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod cache;
 mod cli;
 mod config;
+mod git;
 mod json_output;
 mod metrics_rows;
 mod symbol_commands;
 mod tag_commands;
 mod walk;
 
-use cache::{
-    CacheStore, FileCacheEntry, Ignores, get_file_metadata, now_timestamp,
-};
+use cache::{CacheStore, FileCacheEntry, Ignores, now_timestamp};
+use git::GitChangeDetector;
 use cli::{Cli, Command, MetricsCommand, OutputFormat};
 use json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
@@ -41,8 +41,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { target, save, k, pretty, format } => {
-            handle_check(target.as_deref(), save, k, pretty, format)
+        Command::Check { target, save, k, pretty, format, base } => {
+            handle_check(target.as_deref(), save, k, pretty, format, base)
         }
         Command::Metrics { command } => handle_metrics(command),
         Command::Prompt => handle_prompt(),
@@ -253,11 +253,13 @@ fn parse_check_filter(target: Option<&str>, cwd: &Path) -> CheckFilter {
     }
 }
 
-/// Collect files to process, separating cached from uncached
+/// Collect files to process, separating cached from uncached.
+/// Uses git-based change detection: files in `git_changed` are considered stale.
 fn collect_files_to_process(
     walker: &SourceWalker,
     filter: &CheckFilter,
     store: &CacheStore,
+    git_changed: &HashSet<PathBuf>,
 ) -> Result<FileCollectionResult> {
     let mut result = FileCollectionResult {
         all_files: Vec::new(),
@@ -285,15 +287,14 @@ fn collect_files_to_process(
             .unwrap_or(&file_path)
             .to_path_buf();
 
+        // Check if file is changed according to git
+        let is_git_changed = git_changed.contains(&file_path);
+
         let cached_entry = store.load_entry(&file_path)?;
 
         if let Some(entry) = cached_entry {
-            let current_meta = get_file_metadata(&file_path)?;
-
-            if entry.mtime == current_meta.mtime
-                && entry.size == current_meta.size
-            {
-                // Cache is valid
+            if !is_git_changed {
+                // Cache is valid (file not changed in git)
                 result.cached_count += 1;
 
                 // For symbol filter, check if any unit matches
@@ -309,23 +310,16 @@ fn collect_files_to_process(
                 continue;
             }
 
-            // Cache is stale, need to re-extract
+            // Cache is stale (file changed in git), need to re-extract
             result.files_to_extract.push(FileCacheEntry {
                 source_path: file_path,
-                mtime: current_meta.mtime,
-                size: current_meta.size,
                 units: Vec::new(),
                 cached_at: 0,
             });
         } else {
             // No cache entry, need to extract
-            let Ok(current_meta) = get_file_metadata(&file_path) else {
-                continue;
-            };
             result.files_to_extract.push(FileCacheEntry {
                 source_path: file_path,
-                mtime: current_meta.mtime,
-                size: current_meta.size,
                 units: Vec::new(),
                 cached_at: 0,
             });
@@ -335,15 +329,17 @@ fn collect_files_to_process(
     Ok(result)
 }
 
-/// Walk source files and extract units, using cache when available
+/// Walk source files and extract units, using cache when available.
+/// Uses git-based change detection for staleness.
 fn walk_and_extract_units(
     walker: &SourceWalker,
     filter: &CheckFilter,
     store: &CacheStore,
     save: bool,
+    git_changed: &HashSet<PathBuf>,
 ) -> Result<WalkResult> {
     // First pass: collect files and load from cache
-    let collection = collect_files_to_process(walker, filter, store)?;
+    let collection = collect_files_to_process(walker, filter, store, git_changed)?;
 
     let mut result = WalkResult {
         units: collection.cached_units,
@@ -362,7 +358,7 @@ fn walk_and_extract_units(
     let extractor = RustExtractor::new(&collection.all_files)?;
 
     // Extract from each file using the shared resolution context
-    for mut entry in collection.files_to_extract {
+    for entry in collection.files_to_extract {
         match extractor.extract_all(&[entry.source_path.clone()]) {
             Ok(units) => {
                 result.extracted_count += 1;
@@ -383,10 +379,12 @@ fn walk_and_extract_units(
                 }
 
                 if save {
-                    entry.source_path = relative;
-                    entry.units = units.clone();
-                    entry.cached_at = now_timestamp();
-                    result.entries_to_save.push(entry);
+                    let save_entry = FileCacheEntry {
+                        source_path: relative,
+                        units: units.clone(),
+                        cached_at: now_timestamp(),
+                    };
+                    result.entries_to_save.push(save_entry);
                 }
                 result.units.extend(units);
             }
@@ -691,12 +689,26 @@ fn handle_check(
     k: i32,
     pretty: bool,
     format: OutputFormat,
+    base: Option<String>,
 ) -> Result<()> {
     let ctx = CheckContext::new()?;
 
+    // Initialize git-based change detection
+    let git_detector =
+        GitChangeDetector::open(ctx.store.root(), &ctx.config.git.main_branch)?;
+    let git_changed = git_detector.detect_changes(
+        base.as_deref(),
+        ctx.config.git.base_commit.as_deref(),
+    )?;
+
     let filter = parse_check_filter(target, &ctx.cwd);
-    let walk_result =
-        walk_and_extract_units(&ctx.walker, &filter, &ctx.store, save)?;
+    let walk_result = walk_and_extract_units(
+        &ctx.walker,
+        &filter,
+        &ctx.store,
+        save,
+        &git_changed,
+    )?;
 
     let units = walk_result.units;
 
