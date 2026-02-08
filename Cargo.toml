@@ -6,6 +6,9 @@ members = [
     "crates/mdlr-extract-rust",
     "crates/mdlr",
 ]
+exclude = [
+    "crates/mdlr-hir-extract",
+]
 
 [workspace.package]
 version = "0.1.0"
