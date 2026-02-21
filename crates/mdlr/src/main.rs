@@ -422,56 +422,10 @@ fn find_extract_rust_binary() -> Result<PathBuf> {
     );
 }
 
-/// Discover which cargo packages contain files that need extraction.
-fn discover_packages_for_files(
-    files: &[FileCacheEntry],
-    workspace_root: &Path,
-) -> Result<Vec<String>> {
-    let output = std::process::Command::new("cargo")
-        .args(["metadata", "--format-version=1", "--no-deps"])
-        .current_dir(workspace_root)
-        .output()
-        .context("Failed to run cargo metadata")?;
-
-    if !output.status.success() {
-        bail!(
-            "cargo metadata failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let metadata: serde_json::Value =
-        serde_json::from_slice(&output.stdout)
-            .context("Failed to parse cargo metadata")?;
-
-    let packages = metadata["packages"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("No packages in cargo metadata"))?;
-
-    let mut needed = Vec::new();
-    for package in packages {
-        let name = package["name"].as_str().unwrap_or_default();
-        let manifest_path =
-            package["manifest_path"].as_str().unwrap_or_default();
-        let package_root =
-            Path::new(manifest_path).parent().unwrap_or(Path::new(""));
-
-        let has_files = files
-            .iter()
-            .any(|entry| entry.source_path.starts_with(package_root));
-
-        if has_files {
-            needed.push(name.to_string());
-        }
-    }
-
-    Ok(needed)
-}
-
-/// Shell out to `mdlr-extract-rust` via `cargo check` to extract units.
+/// Shell out to `mdlr-extract-rust` in standalone mode to extract units.
 ///
-/// Creates a mapping file, runs `cargo check` with `RUSTC_WRAPPER` for each
-/// package that has files needing extraction, then loads the resulting JSON.
+/// Creates a mapping file, invokes `mdlr-extract-rust --manifest-path <path>
+/// --mapping <path>` once, then loads the resulting JSON.
 fn extract_rust(
     files: &[FileCacheEntry],
     workspace_root: &Path,
@@ -499,29 +453,26 @@ fn extract_rust(
     // Find mdlr-extract-rust binary
     let extract_bin = find_extract_rust_binary()?;
 
-    // Discover which packages need extraction
-    let packages = discover_packages_for_files(files, workspace_root)?;
+    // Find the workspace Cargo.toml
+    let manifest_path = workspace_root.join("Cargo.toml");
+    if !manifest_path.exists() {
+        bail!("No Cargo.toml found at {}", manifest_path.display());
+    }
 
-    for package_name in &packages {
-        let output = std::process::Command::new("cargo")
-            .args(["check", "-p", package_name])
-            .env("RUSTC_WRAPPER", &extract_bin)
-            .env("MDLR_HIR_MAPPING", mapping_path.to_str().unwrap_or_default())
-            .env("MDLR_HIR_CRATE", package_name)
-            .current_dir(workspace_root)
-            .output()
-            .with_context(|| {
-                format!("Failed to run cargo check for {}", package_name)
-            })?;
+    // Single invocation of mdlr-extract-rust in standalone mode.
+    // Inherit stderr so cargo progress bars and diagnostics show through.
+    let status = std::process::Command::new(&extract_bin)
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .arg("--mapping")
+        .arg(&mapping_path)
+        .current_dir(workspace_root)
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .context("Failed to run mdlr-extract-rust")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!(
-                "Warning: HIR extraction failed for {}:\n  {}",
-                package_name,
-                stderr.lines().last().unwrap_or("unknown error")
-            );
-        }
+    if !status.success() {
+        eprintln!("Warning: HIR extraction failed");
     }
 
     // Load results from temp files

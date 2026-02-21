@@ -9,16 +9,19 @@ extern crate rustc_span;
 
 mod branches;
 mod calls;
+mod executor;
 mod field_access;
 mod visitor;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use clap::Parser;
 use rustc_driver::Callbacks;
 use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Cached extraction data for a single source file.
 /// Matches the `FileCacheEntry` format from `crates/mdlr/src/cache/types.rs`.
@@ -29,18 +32,26 @@ struct FileCacheEntry {
     cached_at: u64,
 }
 
-/// This binary is used as a `RUSTC_WRAPPER`. Cargo invokes it in place of rustc
-/// for every compilation unit.
+/// mdlr-extract-rust: HIR-based Rust unit extraction.
 ///
-/// Environment variables (set by the orchestrating CLI):
-///   MDLR_HIR_MAPPING  — path to JSON file mapping source paths → output paths
-///   MDLR_HIR_CRATE    — cargo package name of the crate to extract from
-///
-/// When cargo calls us:
-///   args[0] = this binary, args[1] = real rustc, args[2..] = rustc flags
-///
-/// For non-target crates we exec the real rustc directly.
-/// For the target crate we run rustc through our callbacks to extract HIR.
+/// Uses cargo-as-library to orchestrate compilation and intercept rustc
+/// invocations for target packages, extracting HIR-level unit information.
+#[derive(Parser, Debug)]
+#[command(name = "mdlr-extract-rust")]
+struct Cli {
+    /// Path to the workspace Cargo.toml
+    #[arg(long)]
+    manifest_path: Option<PathBuf>,
+
+    /// Path to the JSON mapping file (source path → output path)
+    #[arg(long)]
+    mapping: Option<PathBuf>,
+
+    /// Package names to extract from (if empty, extracts from all workspace members)
+    #[arg(long)]
+    package: Vec<String>,
+}
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("mdlr-extract-rust: {e:#}");
@@ -49,62 +60,107 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let cli = Cli::parse();
+    run_standalone_mode(&cli)
+}
 
-    if args.len() < 2 {
-        bail!("Expected to be invoked as RUSTC_WRAPPER (first arg should be the real rustc path)");
-    }
+/// Uses cargo-as-library to orchestrate compilation.
+fn run_standalone_mode(cli: &Cli) -> Result<()> {
+    let manifest_path = cli
+        .manifest_path
+        .as_ref()
+        .context("--manifest-path is required")?;
 
-    let real_rustc = &args[1];
-    let rustc_args = &args[2..];
+    let mapping_path = cli
+        .mapping
+        .as_ref()
+        .context("--mapping is required")?;
 
-    // Which crate is cargo compiling right now?
-    let compiling_crate = rustc_args
-        .iter()
-        .position(|a| a == "--crate-name")
-        .and_then(|i| rustc_args.get(i + 1))
-        .map(|s| s.as_str());
-
-    // Cargo passes crate names with hyphens replaced by underscores to rustc.
-    let target_crate = std::env::var("MDLR_HIR_CRATE").ok();
-    let target_normalized = target_crate.as_deref().map(|s| s.replace('-', "_"));
-
-    let is_target = matches!(
-        (&compiling_crate, &target_normalized),
-        (Some(compiling), Some(target)) if *compiling == target
-    );
-
-    if !is_target {
-        // Pass through to real rustc.
-        let status = std::process::Command::new(real_rustc)
-            .args(rustc_args)
-            .status()
-            .context("Failed to run real rustc")?;
-        std::process::exit(status.code().unwrap_or(1));
-    }
-
-    // Target crate — load the mapping and run the compiler with our callbacks.
-    let mapping_path =
-        std::env::var("MDLR_HIR_MAPPING").context("MDLR_HIR_MAPPING env var not set")?;
-    let mapping_content = std::fs::read_to_string(&mapping_path)
-        .with_context(|| format!("Failed to read mapping: {}", mapping_path))?;
+    // Load the mapping file
+    let mapping_content = std::fs::read_to_string(mapping_path)
+        .with_context(|| format!("Failed to read mapping: {}", mapping_path.display()))?;
     let mapping: HashMap<String, String> =
         serde_json::from_str(&mapping_content).context("Failed to parse mapping JSON")?;
 
-    let mut callbacks = HirExtractCallbacks { mapping };
+    // Canonicalize the manifest path
+    let manifest_path = manifest_path
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve manifest path: {}", manifest_path.display()))?;
 
-    // args for run_compiler: [rustc, ...flags]  (first element is treated as argv[0])
-    let mut driver_args = vec![real_rustc.clone()];
-    driver_args.extend_from_slice(rustc_args);
+    // Ensure cargo-as-library uses the same rustc that our linked rustc_driver
+    // came from. Without this, cargo may discover a different rustc (e.g. stable)
+    // and deps compiled with that rustc will be incompatible with our in-process
+    // rustc_driver (nightly), causing E0514 metadata mismatch errors.
+    let sysroot = env!("MDLR_RUSTC_SYSROOT");
+    let rustc_path = PathBuf::from(sysroot).join("bin").join("rustc");
+    // SAFETY: called before spawning any threads (cargo hasn't started yet)
+    unsafe { std::env::set_var("RUSTC", &rustc_path) };
 
-    let result = rustc_driver::catch_fatal_errors(|| {
-        rustc_driver::run_compiler(&driver_args, &mut callbacks);
-    });
+    // Set up cargo's GlobalContext
+    let gctx = cargo::GlobalContext::default()
+        .context("Failed to create cargo GlobalContext")?;
 
-    match result {
-        Ok(()) => Ok(()),
-        Err(_) => bail!("rustc compilation failed"),
-    }
+    // Default shell is Verbose (shows "Running rustc..." for every unit).
+    // Set to Normal to show only "Compiling"/"Checking"/"Finished" + progress bars.
+    gctx.shell().set_verbosity(cargo::core::shell::Verbosity::Normal);
+
+    // Create workspace
+    let ws = cargo::core::Workspace::new(&manifest_path, &gctx)
+        .context("Failed to create cargo Workspace")?;
+
+    // Determine which packages to compile and extract from.
+    // If --package was specified, use those. Otherwise, discover which workspace
+    // members contain files listed in the mapping.
+    let target_packages: HashSet<String> = if !cli.package.is_empty() {
+        cli.package.iter().cloned().collect()
+    } else {
+        // Derive packages from the mapping: check which workspace member
+        // directories contain the source paths in the mapping.
+        let ws_root = ws.root().to_path_buf();
+        let mut packages = HashSet::new();
+        for member in ws.members() {
+            let pkg_dir = member.root();
+            let relative_dir = pkg_dir
+                .strip_prefix(&ws_root)
+                .unwrap_or(pkg_dir)
+                .to_string_lossy();
+            for source_path in mapping.keys() {
+                if source_path.starts_with(relative_dir.as_ref()) {
+                    packages.insert(member.name().to_string());
+                    break;
+                }
+            }
+        }
+        if packages.is_empty() {
+            // Fallback: all workspace members
+            ws.members().map(|p| p.name().to_string()).collect()
+        } else {
+            packages
+        }
+    };
+
+    // Set up compile options for check mode
+    let mut compile_opts = cargo::ops::CompileOptions::new(
+        &gctx,
+        cargo::core::compiler::CompileMode::Check { test: false },
+    )
+    .context("Failed to create CompileOptions")?;
+
+    // Always set the package spec explicitly — Packages::Default fails on
+    // virtual manifests (workspace root with no [package]).
+    compile_opts.spec = cargo::ops::Packages::Packages(
+        target_packages.iter().cloned().collect(),
+    );
+
+    // Create the executor
+    let exec: Arc<dyn cargo::core::compiler::Executor> =
+        Arc::new(executor::HirExtractExecutor::new(mapping, target_packages));
+
+    // Run compilation with our custom executor
+    cargo::ops::compile_with_exec(&ws, &compile_opts, &exec)
+        .context("cargo compilation failed")?;
+
+    Ok(())
 }
 
 struct HirExtractCallbacks {
