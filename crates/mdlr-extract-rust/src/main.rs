@@ -94,8 +94,13 @@ fn run_standalone_mode(cli: &Cli) -> Result<()> {
     gctx.shell().set_verbosity(cargo::core::shell::Verbosity::Normal);
 
     // Create workspace
-    let ws = cargo::core::Workspace::new(&manifest_path, &gctx)
+    let mut ws = cargo::core::Workspace::new(&manifest_path, &gctx)
         .context("Failed to create cargo Workspace")?;
+
+    // Use a separate target directory (.mdlr/target) so that mdlr's check-mode
+    // builds don't invalidate the user's normal build cache in target/.
+    let mdlr_target_dir = ws.root().join(".mdlr").join("target");
+    ws.set_target_dir(cargo::util::Filesystem::new(mdlr_target_dir));
 
     // Determine which packages to compile and extract from.
     let target_packages: HashSet<String> = if !cli.package.is_empty() {
