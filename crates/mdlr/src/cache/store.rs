@@ -57,6 +57,7 @@ impl CacheStore {
     }
 
     /// Find a cache store by searching up, or create one at the given directory if not found.
+    /// TODO: This should find all and then pick the highest
     pub fn find_or_create(start_dir: &Path) -> Result<Self> {
         let start = start_dir
             .canonicalize()
@@ -82,6 +83,11 @@ impl CacheStore {
     /// Get the project root path.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Get the cache directory path (.mdlr/cache).
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
     }
 
     /// Convert a source file path to its corresponding cache file path.

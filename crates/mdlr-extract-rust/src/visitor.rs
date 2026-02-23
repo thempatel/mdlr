@@ -9,29 +9,13 @@ use crate::branches;
 use crate::calls;
 use crate::field_access;
 
-/// Extract units from HIR for all requested source files.
+/// Extract units from HIR for all source files in the crate.
 ///
-/// Returns a map from source file path (as given in the mapping) to the units found in that file.
-pub fn extract_units(
-    tcx: TyCtxt<'_>,
-    mapping: &HashMap<String, String>,
-) -> HashMap<String, Vec<Unit>> {
+/// Returns a map from relative source file path to the units found in that file.
+pub fn extract_units(tcx: TyCtxt<'_>) -> HashMap<String, Vec<Unit>> {
     let mut results: HashMap<String, Vec<Unit>> = HashMap::new();
 
-    // Pre-compute absolute paths for matching
     let cwd = std::env::current_dir().unwrap_or_default();
-    let abs_mapping: HashMap<PathBuf, String> = mapping
-        .keys()
-        .map(|source| {
-            let p = PathBuf::from(source);
-            let abs = if p.is_absolute() {
-                p
-            } else {
-                cwd.join(&p)
-            };
-            (abs, source.clone())
-        })
-        .collect();
 
     // Iterate all top-level items in the crate
     for item_id in tcx.hir_free_items() {
@@ -51,27 +35,18 @@ pub fn extract_units(
             None => continue,
         };
 
-        // Canonicalize to match against our mapping
+        // Compute a relative path from cwd
         let abs_file = if file_path.is_absolute() {
             file_path.clone()
         } else {
             cwd.join(&file_path)
         };
 
-        let source_key = match abs_mapping.get(&abs_file) {
-            Some(key) => key.clone(),
-            None => {
-                // Try canonicalizing both paths
-                let canonical = abs_file.canonicalize().ok();
-                let found = abs_mapping.iter().find(|(k, _)| {
-                    k.canonicalize().ok() == canonical
-                });
-                match found {
-                    Some((_, key)) => key.clone(),
-                    None => continue,
-                }
-            }
-        };
+        let source_key = abs_file
+            .strip_prefix(&cwd)
+            .unwrap_or(&abs_file)
+            .to_string_lossy()
+            .to_string();
 
         let units = results.entry(source_key.clone()).or_default();
 
@@ -104,8 +79,10 @@ pub fn extract_units(
                 let body = tcx.hir_body(*body_id);
                 let params = count_params(sig.decl);
                 let branch_count = branches::count_branches(tcx, body);
-                let (call_targets, calls_partial) = calls::extract_calls(tcx, def_id.to_def_id(), body);
-                let (reads, writes) = field_access::extract_field_access(tcx, body);
+                let (call_targets, calls_partial) =
+                    calls::extract_calls(tcx, def_id.to_def_id(), body);
+                let (reads, writes) =
+                    field_access::extract_field_access(tcx, body);
 
                 units.push(Unit {
                     id,
@@ -156,8 +133,10 @@ fn visit_impl_block(
                 let body = tcx.hir_body(*body_id);
                 let params = count_params_method(sig.decl);
                 let branch_count = branches::count_branches(tcx, body);
-                let (call_targets, calls_partial) = calls::extract_calls(tcx, def_id.to_def_id(), body);
-                let (reads, writes) = field_access::extract_field_access(tcx, body);
+                let (call_targets, calls_partial) =
+                    calls::extract_calls(tcx, def_id.to_def_id(), body);
+                let (reads, writes) =
+                    field_access::extract_field_access(tcx, body);
 
                 units.push(Unit {
                     id,
@@ -180,8 +159,13 @@ fn visit_impl_block(
 }
 
 /// Resolve the self type of an impl block to a struct's def_path_str.
-fn resolve_impl_self_type(tcx: TyCtxt<'_>, impl_block: &hir::Impl<'_>) -> Option<String> {
-    if let hir::TyKind::Path(hir::QPath::Resolved(_, path)) = &impl_block.self_ty.kind {
+fn resolve_impl_self_type(
+    tcx: TyCtxt<'_>,
+    impl_block: &hir::Impl<'_>,
+) -> Option<String> {
+    if let hir::TyKind::Path(hir::QPath::Resolved(_, path)) =
+        &impl_block.self_ty.kind
+    {
         if let hir::def::Res::Def(_, def_id) = path.res {
             return Some(tcx.def_path_str(def_id));
         }
@@ -203,10 +187,7 @@ fn count_params_method(decl: &hir::FnDecl<'_>) -> usize {
     }
 }
 
-fn make_span(
-    lo: &rustc_span::Loc,
-    hi: &rustc_span::Loc,
-) -> Span {
+fn make_span(lo: &rustc_span::Loc, hi: &rustc_span::Loc) -> Span {
     Span {
         start_line: lo.line,
         start_col: lo.col.0,

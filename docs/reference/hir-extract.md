@@ -1,6 +1,6 @@
 # HIR Extractor
 
-`mdlr-extract-rust` is a `RUSTC_WRAPPER` binary that uses the Rust compiler's HIR (High-level Intermediate Representation) to extract code units with fully-resolved type information.
+`mdlr-extract-rust` is a standalone binary that uses cargo-as-library and the Rust compiler's HIR (High-level Intermediate Representation) to extract code units with fully-resolved type information.
 
 ## Requirements
 
@@ -9,36 +9,34 @@
 
 ## Usage
 
-The binary is used as a `RUSTC_WRAPPER`. The orchestrating CLI sets environment variables and runs `cargo +nightly check`:
+The binary is invoked directly by `mdlr check`:
 
 ```bash
-RUSTC_WRAPPER=path/to/mdlr-extract-rust \
-MDLR_HIR_MAPPING=mapping.json \
-MDLR_HIR_CRATE=mdlr-core \
-  cargo +nightly check -p mdlr-core
+mdlr-extract-rust --manifest-path path/to/Cargo.toml --output output.json
 ```
 
-### Environment Variables
+### CLI Arguments
 
-| Variable | Description |
+| Argument | Description |
 |----------|-------------|
-| `MDLR_HIR_MAPPING` | Path to a JSON file mapping source file paths to output destinations |
-| `MDLR_HIR_CRATE` | Cargo package name of the crate to extract from |
-
-### Mapping File Format
-
-```json
-{
-  "crates/mdlr-core/src/graph/types.rs": ".mdlr/cache/crates/mdlr-core/src/graph/types.json",
-  "crates/mdlr-core/src/graph/builder.rs": ".mdlr/cache/crates/mdlr-core/src/graph/builder.json"
-}
-```
-
-For non-target crates the wrapper passes through to real `rustc`. For the target crate it runs `rustc` with callbacks that extract HIR after type checking, writes output files, and stops before codegen.
+| `--manifest-path` | Path to the workspace `Cargo.toml` |
+| `--output` | Output directory for per-file JSON results (mirrors source tree structure) |
+| `--package` | (Optional, repeatable) Package names to extract from. Defaults to all workspace members. |
 
 ## Output Format
 
-Each output file contains a `FileCacheEntry`-compatible JSON object:
+The output directory mirrors the source tree. Each source file gets a corresponding JSON file:
+
+```
+<output>/
+└── crates/
+    └── mdlr-core/
+        └── src/
+            └── graph/
+                └── types.json    # from crates/mdlr-core/src/graph/types.rs
+```
+
+Each JSON file contains a single `FileCacheEntry`:
 
 ```json
 {

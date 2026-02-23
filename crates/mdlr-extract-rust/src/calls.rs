@@ -11,7 +11,11 @@ use rustc_span::def_id::DefId;
 ///
 /// Returns `(calls, partial)` where `partial` is true if typeck failed and
 /// call resolution could not be performed.
-pub fn extract_calls(tcx: TyCtxt<'_>, fn_def_id: DefId, body: &hir::Body<'_>) -> (Vec<String>, bool) {
+pub fn extract_calls(
+    tcx: TyCtxt<'_>,
+    fn_def_id: DefId,
+    body: &hir::Body<'_>,
+) -> (Vec<String>, bool) {
     let mut calls = Vec::new();
     let typeck = match fn_def_id.as_local() {
         Some(local_id) => {

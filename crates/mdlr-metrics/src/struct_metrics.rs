@@ -28,6 +28,7 @@ pub struct LcomMetrics {
 }
 
 impl StructMetrics {
+    #[tracing::instrument(name = "compute_struct_metrics", skip_all)]
     pub fn compute(graph: &Graph) -> Self {
         let methods_per_struct = compute_methods_per_struct(graph);
         let lcom = compute_lcom(graph);

@@ -20,6 +20,7 @@ dirs = { workspace = true }
 ignore = { workspace = true }
 tabwriter = { workspace = true }
 tempfile = { workspace = true }
-git2 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]

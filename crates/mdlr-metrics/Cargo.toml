@@ -7,6 +7,7 @@ edition.workspace = true
 mdlr-core = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

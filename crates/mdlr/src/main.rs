@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,16 +7,15 @@ use std::path::{Path, PathBuf};
 mod cache;
 mod cli;
 mod config;
-mod git;
 mod json_output;
 mod metrics_rows;
 mod symbol_commands;
 mod tag_commands;
+mod timing;
 mod walk;
 
-use cache::{CacheStore, FileCacheEntry, Ignores, now_timestamp};
+use cache::{CacheStore, FileCacheEntry};
 use cli::{Cli, Command, MetricsCommand, OutputFormat};
-use git::GitChangeDetector;
 use json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
     build_file_loc_json, build_semantic_tags_json, build_struct_json,
@@ -34,14 +32,13 @@ use tag_commands::{
     handle_tag_add, handle_tag_clear, handle_tag_list, handle_tag_remove,
     handle_tag_show, verify_symbol_exists,
 };
-use walk::SourceWalker;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { target, save, k, pretty, format, base } => {
-            handle_check(target.as_deref(), save, k, pretty, format, base)
+        Command::Check { target, save, k, pretty, format, timing } => {
+            handle_check(target.as_deref(), save, k, pretty, format, timing)
         }
         Command::Metrics { command } => handle_metrics(command),
         Command::Prompt => handle_prompt(),
@@ -174,30 +171,6 @@ enum CheckFilter {
     Symbol(String),
 }
 
-/// Result of walking and extracting units from source files
-struct WalkResult {
-    units: Vec<Unit>,
-    extracted_count: usize,
-    cached_count: usize,
-    entries_to_save: Vec<FileCacheEntry>,
-    files_with_matching_symbols: HashSet<std::path::PathBuf>,
-}
-
-/// Result of collecting files to process
-struct FileCollectionResult {
-    /// All files discovered by the walker
-    all_files: Vec<std::path::PathBuf>,
-    /// Rust files that need extraction (not cached or cache stale).
-    /// source_path contains the absolute path; units is empty until extraction.
-    files_to_extract: Vec<FileCacheEntry>,
-    /// Units loaded from cache
-    cached_units: Vec<Unit>,
-    /// Count of cached files
-    cached_count: usize,
-    /// Files that contain matching symbols (for symbol filter)
-    files_with_matching_symbols: HashSet<std::path::PathBuf>,
-}
-
 /// Bundle of all computed metrics for a graph
 struct ComputedMetrics {
     graph: Graph,
@@ -214,7 +187,6 @@ struct CheckContext {
     cwd: std::path::PathBuf,
     store: CacheStore,
     config: config::Config,
-    walker: SourceWalker,
 }
 
 impl CheckContext {
@@ -222,9 +194,8 @@ impl CheckContext {
         let cwd = env::current_dir()?;
         let store = CacheStore::find_or_create(&cwd)?;
         let config = config::load()?;
-        let walker = SourceWalker::new(store.root());
 
-        Ok(CheckContext { cwd, store, config, walker })
+        Ok(CheckContext { cwd, store, config })
     }
 }
 
@@ -250,148 +221,6 @@ fn parse_check_filter(target: Option<&str>, cwd: &Path) -> CheckFilter {
     } else {
         CheckFilter::None
     }
-}
-
-/// Collect files to process, separating cached from uncached.
-/// Uses git-based change detection: files in `git_changed` are considered stale.
-fn collect_files_to_process(
-    walker: &SourceWalker,
-    filter: &CheckFilter,
-    store: &CacheStore,
-    git_changed: &HashSet<PathBuf>,
-) -> Result<FileCollectionResult> {
-    let mut result = FileCollectionResult {
-        all_files: Vec::new(),
-        files_to_extract: Vec::new(),
-        cached_units: Vec::new(),
-        cached_count: 0,
-        files_with_matching_symbols: HashSet::new(),
-    };
-
-    for file_path in walker.walk() {
-        // Collect all files before filtering
-        result.all_files.push(file_path.clone());
-
-        if !passes_path_filter(&file_path, filter) {
-            continue;
-        }
-
-        // Only process Rust files for extraction
-        if file_path.extension().and_then(|e| e.to_str()) != Some("rs") {
-            continue;
-        }
-
-        let relative = file_path
-            .strip_prefix(store.root())
-            .unwrap_or(&file_path)
-            .to_path_buf();
-
-        // Check if file is changed according to git
-        let is_git_changed = git_changed.contains(&file_path);
-
-        let cached_entry = store.load_entry(&file_path)?;
-
-        if let Some(entry) = cached_entry {
-            if !is_git_changed {
-                // Cache is valid (file not changed in git)
-                result.cached_count += 1;
-
-                // For symbol filter, check if any unit matches
-                if let CheckFilter::Symbol(symbol_id) = filter {
-                    if entry.units.iter().any(|u| u.id == *symbol_id) {
-                        result
-                            .files_with_matching_symbols
-                            .insert(relative.clone());
-                    }
-                }
-
-                result.cached_units.extend(entry.units);
-                continue;
-            }
-
-            // Cache is stale (file changed in git), need to re-extract
-            result.files_to_extract.push(FileCacheEntry {
-                source_path: file_path,
-                units: Vec::new(),
-                cached_at: 0,
-            });
-        } else {
-            // No cache entry, need to extract
-            result.files_to_extract.push(FileCacheEntry {
-                source_path: file_path,
-                units: Vec::new(),
-                cached_at: 0,
-            });
-        }
-    }
-
-    Ok(result)
-}
-
-/// Walk source files and extract units, using cache when available.
-/// Uses git-based change detection for staleness.
-fn walk_and_extract_units(
-    walker: &SourceWalker,
-    filter: &CheckFilter,
-    store: &CacheStore,
-    save: bool,
-    git_changed: &HashSet<PathBuf>,
-) -> Result<WalkResult> {
-    // First pass: collect files and load from cache
-    let collection =
-        collect_files_to_process(walker, filter, store, git_changed)?;
-
-    let mut result = WalkResult {
-        units: collection.cached_units,
-        extracted_count: 0,
-        cached_count: collection.cached_count,
-        entries_to_save: Vec::new(),
-        files_with_matching_symbols: collection.files_with_matching_symbols,
-    };
-
-    // If no files need extraction, we're done
-    if collection.files_to_extract.is_empty() {
-        return Ok(result);
-    }
-
-    // Shell out to mdlr-extract-rust for extraction
-    let extracted = extract_rust(&collection.files_to_extract, store.root())?;
-
-    for (entry, file_entry) in
-        collection.files_to_extract.iter().zip(extracted.iter())
-    {
-        let units = match file_entry {
-            Some(fe) => &fe.units,
-            None => continue,
-        };
-
-        result.extracted_count += 1;
-
-        let relative = entry
-            .source_path
-            .strip_prefix(store.root())
-            .unwrap_or(&entry.source_path)
-            .to_path_buf();
-
-        // For symbol filter, check if any unit matches
-        if let CheckFilter::Symbol(symbol_id) = filter {
-            if units.iter().any(|u| u.id == *symbol_id) {
-                result.files_with_matching_symbols.insert(relative.clone());
-            }
-        }
-
-        if save {
-            let save_entry = FileCacheEntry {
-                source_path: relative,
-                units: units.clone(),
-                cached_at: now_timestamp(),
-            };
-            result.entries_to_save.push(save_entry);
-        }
-        result.units.extend(units.clone());
-    }
-
-    Ok(result)
 }
 
 /// Find the `mdlr-extract-rust` binary, checking next to our own binary first.
@@ -422,33 +251,13 @@ fn find_extract_rust_binary() -> Result<PathBuf> {
     );
 }
 
-/// Shell out to `mdlr-extract-rust` in standalone mode to extract units.
+/// Shell out to `mdlr-extract-rust` to extract units from all workspace members.
 ///
-/// Creates a mapping file, invokes `mdlr-extract-rust --manifest-path <path>
-/// --mapping <path>` once, then loads the resulting JSON.
-fn extract_rust(
-    files: &[FileCacheEntry],
-    workspace_root: &Path,
-) -> Result<Vec<Option<FileCacheEntry>>> {
-    let tmp_dir = tempfile::tempdir()?;
-
-    // Build mapping: relative source path → temp output path
-    // Using relative paths (relative to workspace_root) so that unit.file
-    // fields in the extracted output are project-relative, not absolute.
-    let mut mapping: HashMap<String, String> = HashMap::new();
-    for (i, entry) in files.iter().enumerate() {
-        let relative = entry
-            .source_path
-            .strip_prefix(workspace_root)
-            .unwrap_or(&entry.source_path);
-        let source_key = relative.to_string_lossy().to_string();
-        let output_path = tmp_dir.path().join(format!("{}.json", i));
-        mapping.insert(source_key, output_path.to_string_lossy().to_string());
-    }
-
-    // Write mapping file
-    let mapping_path = tmp_dir.path().join("mapping.json");
-    std::fs::write(&mapping_path, serde_json::to_string(&mapping)?)?;
+/// Invokes `mdlr-extract-rust --manifest-path <path> --output <dir>`,
+/// writing per-file JSON results directly into the cache directory.
+#[tracing::instrument(name = "extract", skip_all)]
+fn extract_rust(store: &CacheStore) -> Result<()> {
+    let workspace_root = store.root();
 
     // Find mdlr-extract-rust binary
     let extract_bin = find_extract_rust_binary()?;
@@ -460,14 +269,16 @@ fn extract_rust(
     }
 
     // Single invocation of mdlr-extract-rust in standalone mode.
+    // Output goes directly to .mdlr/cache/ so results are immediately
+    // available to ls/get commands.
     // Suppress all output — cargo's Compiling/Checking/Finished lines and
     // rustc diagnostics (via MDLR_QUIET_DIAGNOSTICS) are not useful to the
     // end user. Run standalone for debugging.
     let status = std::process::Command::new(&extract_bin)
         .arg("--manifest-path")
         .arg(&manifest_path)
-        .arg("--mapping")
-        .arg(&mapping_path)
+        .arg("--output")
+        .arg(store.cache_dir())
         .env("MDLR_QUIET_DIAGNOSTICS", "1")
         .current_dir(workspace_root)
         .stdout(std::process::Stdio::null())
@@ -476,23 +287,41 @@ fn extract_rust(
         .context("Failed to run mdlr-extract-rust")?;
 
     if !status.success() {
-        eprintln!("Warning: HIR extraction failed");
+        eprintln!(
+            "Warning: HIR extraction had errors (results may be partial)"
+        );
     }
 
-    // Load results from temp files
-    let mut results = Vec::with_capacity(files.len());
-    for i in 0..files.len() {
-        let output_path = tmp_dir.path().join(format!("{}.json", i));
-        if output_path.exists() {
-            let content = std::fs::read_to_string(&output_path)?;
-            let file_entry: FileCacheEntry = serde_json::from_str(&content)?;
-            results.push(Some(file_entry));
-        } else {
-            results.push(None);
+    Ok(())
+}
+
+/// Recursively load FileCacheEntry JSON files from a directory.
+#[tracing::instrument(name = "load_cache", skip_all)]
+fn load_entries_from_dir(
+    dir: &Path,
+    entries: &mut Vec<FileCacheEntry>,
+) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for item in std::fs::read_dir(dir)? {
+        let item = item?;
+        let path = item.path();
+        if path.is_dir() {
+            load_entries_from_dir(&path, entries)?;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            let content =
+                std::fs::read_to_string(&path).with_context(|| {
+                    format!("Failed to read {}", path.display())
+                })?;
+            let entry: FileCacheEntry = serde_json::from_str(&content)
+                .with_context(|| {
+                    format!("Failed to parse {}", path.display())
+                })?;
+            entries.push(entry);
         }
     }
-
-    Ok(results)
+    Ok(())
 }
 
 /// Check if a file path passes the filter
@@ -506,40 +335,15 @@ fn passes_path_filter(file_path: &Path, filter: &CheckFilter) -> bool {
     }
 }
 /// Save cache entries based on filter type
-fn save_cache_entries(
-    store: &CacheStore,
-    filter: &CheckFilter,
-    entries: Vec<FileCacheEntry>,
-    matching_files: &HashSet<std::path::PathBuf>,
-) -> Result<()> {
-    match filter {
-        CheckFilter::Symbol(_) => {
-            // Only save files that contain matching symbols
-            for entry in entries {
-                if matching_files.contains(&entry.source_path) {
-                    store.save_entry(&entry)?;
-                }
-            }
-        }
-        _ => {
-            // Save all entries (already filtered by path)
-            for entry in entries {
-                store.save_entry(&entry)?;
-            }
-        }
-    }
-    // Commit any staged tag changes
-    store.commit_staged_tags()?;
-    Ok(())
-}
-
 /// Compute all metrics from units
+#[tracing::instrument(name = "compute_metrics", skip_all)]
 fn compute_all_metrics(
     units: Vec<Unit>,
     store: &CacheStore,
     config: &config::Config,
 ) -> ComputedMetrics {
-    let graph = build_graph(units);
+    let graph =
+        tracing::info_span!("build_graph").in_scope(|| build_graph(units));
     let structural = compute_structural(
         &graph,
         config.hub.min_fan_in,
@@ -801,30 +605,41 @@ fn handle_check(
     k: i32,
     pretty: bool,
     format: OutputFormat,
-    base: Option<String>,
+    timing: bool,
 ) -> Result<()> {
+    let printer = if timing {
+        let (layer, printer) = timing::TimingLayer::new();
+        let subscriber = tracing_subscriber::registry::Registry::default();
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber = subscriber.with(layer);
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("failed to set tracing subscriber");
+        Some(printer)
+    } else {
+        None
+    };
+
     let ctx = CheckContext::new()?;
-
-    // Initialize git-based change detection
-    let git_detector = GitChangeDetector::open(
-        ctx.store.root(),
-        &ctx.config.git.main_branch,
-    )?;
-    let git_changed = git_detector.detect_changes(
-        base.as_deref(),
-        ctx.config.git.base_commit.as_deref(),
-    )?;
-
     let filter = parse_check_filter(target, &ctx.cwd);
-    let walk_result = walk_and_extract_units(
-        &ctx.walker,
-        &filter,
-        &ctx.store,
-        save,
-        &git_changed,
-    )?;
 
-    let units = walk_result.units;
+    // Extract all units from the workspace into .mdlr/cache/
+    extract_rust(&ctx.store)?;
+
+    // Load all extracted entries from cache
+    let mut entries = Vec::new();
+    load_entries_from_dir(ctx.store.cache_dir(), &mut entries)?;
+
+    // Filter entries by path, collect units
+    let mut units = Vec::new();
+
+    for entry in &entries {
+        let file_path = ctx.store.root().join(&entry.source_path);
+        if !passes_path_filter(&file_path, &filter) {
+            continue;
+        }
+
+        units.extend(entry.units.clone());
+    }
 
     // Validate symbol exists before building graph (bail if not found)
     if let CheckFilter::Symbol(symbol_id) = &filter {
@@ -837,19 +652,15 @@ fn handle_check(
     }
 
     if save {
-        save_cache_entries(
-            &ctx.store,
-            &filter,
-            walk_result.entries_to_save,
-            &walk_result.files_with_matching_symbols,
-        )?;
+        // Commit any staged tag changes
+        ctx.store.commit_staged_tags()?;
     }
 
     // Build full graph with all units to capture all edges (including callers)
     let computed = compute_all_metrics(units, &ctx.store, &ctx.config);
 
     // Filter is applied at output time, not graph construction time
-    match format {
+    let result = match format {
         OutputFormat::Text => format_text_output(
             &computed,
             &ctx.config,
@@ -861,11 +672,17 @@ fn handle_check(
         OutputFormat::Json => format_json_output(
             &computed,
             &ctx.config,
-            walk_result.extracted_count,
-            walk_result.cached_count,
+            entries.len(),
+            0,
             &filter,
         ),
+    };
+
+    if let Some(printer) = printer {
+        printer.print();
     }
+
+    result
 }
 
 fn handle_tag(

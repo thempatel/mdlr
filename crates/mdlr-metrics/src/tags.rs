@@ -114,6 +114,7 @@ pub struct CrossConceptEdges {
 
 impl TagMetrics {
     /// Compute tag metrics from graph and semantic tags
+    #[tracing::instrument(name = "compute_tags", skip_all)]
     pub fn compute(graph: &Graph, tags: &SemanticTags) -> Self {
         let total_units = graph.units.len();
 

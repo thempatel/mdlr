@@ -26,6 +26,7 @@ fn find_config_file(start_dir: &Path) -> Option<PathBuf> {
 /// Load configuration from .mdlr/config.yaml
 /// Searches recursively up from the current working directory
 /// Returns default config if no file is found
+/// TODO: Should load from project root
 pub fn load() -> Result<Config> {
     load_from_dir(&env::current_dir()?)
 }

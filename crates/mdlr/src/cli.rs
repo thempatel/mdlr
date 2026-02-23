@@ -28,9 +28,9 @@ pub enum Command {
         /// Output format
         #[arg(long, default_value = "text")]
         format: OutputFormat,
-        /// Override base commit/branch for git-based change detection
+        /// Show timing breakdown for each phase
         #[arg(long)]
-        base: Option<String>,
+        timing: bool,
     },
     /// List supported metrics with descriptions
     Metrics {

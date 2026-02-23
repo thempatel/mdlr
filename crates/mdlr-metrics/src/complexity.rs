@@ -40,6 +40,7 @@ pub struct CyclomaticMetrics {
 
 impl ComplexityMetrics {
     /// Compute complexity metrics from a graph
+    #[tracing::instrument(name = "compute_complexity", skip_all)]
     pub fn compute(graph: &Graph) -> Self {
         let mut sizes: HashMap<String, usize> = HashMap::new();
         let mut params: HashMap<String, usize> = HashMap::new();

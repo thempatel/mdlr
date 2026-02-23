@@ -4,8 +4,6 @@ members = [
     "crates/mdlr-core",
     "crates/mdlr-metrics",
     "crates/mdlr",
-]
-exclude = [
     "crates/mdlr-extract-rust",
 ]
 
@@ -30,4 +28,5 @@ serde_yaml = "0.9"
 ignore = "0.4"
 tabwriter = "1.4.1"
 tempfile = "3"
-git2 = "0.19"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }

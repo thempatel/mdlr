@@ -8,13 +8,13 @@ name = "mdlr-extract-rust"
 path = "src/main.rs"
 
 [dependencies]
-mdlr-core = { path = "../mdlr-core" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
+mdlr-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
 cargo = "0.87"
 cargo-util = "0.2"
-clap = { version = "4", features = ["derive"] }
 libc = "0.2"
 
 [package.metadata.rust-analyzer]

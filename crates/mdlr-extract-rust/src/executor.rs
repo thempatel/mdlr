@@ -1,10 +1,11 @@
+use cargo::CargoResult;
 use cargo::core::compiler::{CompileMode, Executor, Unit};
 use cargo::core::{PackageId, Target};
-use cargo::CargoResult;
 use cargo_util::ProcessBuilder;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::os::fd::AsRawFd;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::HirExtractCallbacks;
@@ -12,8 +13,8 @@ use crate::HirExtractCallbacks;
 /// Custom executor that intercepts rustc invocations for target packages
 /// and runs them through `rustc_driver` with `HirExtractCallbacks`.
 pub struct HirExtractExecutor {
-    /// Mapping from source path → output path (for target packages)
-    mapping: HashMap<String, String>,
+    /// Output directory for per-file JSON results
+    output_dir: PathBuf,
     /// Set of package names we want to extract from
     target_packages: HashSet<String>,
     /// Mutex to serialize rustc_driver calls (global state safety)
@@ -21,12 +22,8 @@ pub struct HirExtractExecutor {
 }
 
 impl HirExtractExecutor {
-    pub fn new(mapping: HashMap<String, String>, target_packages: HashSet<String>) -> Self {
-        Self {
-            mapping,
-            target_packages,
-            driver_lock: Mutex::new(()),
-        }
+    pub fn new(output_dir: PathBuf, target_packages: HashSet<String>) -> Self {
+        Self { output_dir, target_packages, driver_lock: Mutex::new(()) }
     }
 
     fn is_target_package(&self, id: PackageId) -> bool {
@@ -46,7 +43,8 @@ impl Executor for HirExtractExecutor {
     ) -> CargoResult<()> {
         if !self.is_target_package(id) {
             // Non-target package: run rustc normally
-            return cmd.exec_with_streaming(on_stdout_line, on_stderr_line, false)
+            return cmd
+                .exec_with_streaming(on_stdout_line, on_stderr_line, false)
                 .map(|_| ());
         }
 
@@ -59,10 +57,8 @@ impl Executor for HirExtractExecutor {
         // our in-process driver writes directly to stderr, bypassing cargo's
         // on_stderr_line callback).
         let program: OsString = cmd.get_program().to_owned();
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().to_string())
-            .collect();
+        let args: Vec<String> =
+            cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
 
         let mut driver_args: Vec<String> = Vec::with_capacity(1 + args.len());
         driver_args.push(program.to_string_lossy().to_string());
@@ -72,7 +68,8 @@ impl Executor for HirExtractExecutor {
                 skip_next = false;
                 continue;
             }
-            if arg.starts_with("--error-format") || arg.starts_with("--json=") {
+            if arg.starts_with("--error-format") || arg.starts_with("--json=")
+            {
                 continue;
             }
             if arg == "--json" {
@@ -92,9 +89,8 @@ impl Executor for HirExtractExecutor {
             }
         }
 
-        let mut callbacks = HirExtractCallbacks {
-            mapping: self.mapping.clone(),
-        };
+        let mut callbacks =
+            HirExtractCallbacks { output_dir: self.output_dir.clone() };
 
         // When invoked by mdlr, suppress rustc's diagnostic output. The target
         // crate may not compile cleanly under nightly (e.g. stricter type
@@ -124,14 +120,16 @@ impl Executor for HirExtractExecutor {
         }
 
         if result.is_err() {
-            eprintln!("warning: compilation errors in package {}, extraction may be incomplete", id.name());
+            eprintln!(
+                "warning: compilation errors in package {}, extraction may be incomplete",
+                id.name()
+            );
         }
 
         Ok(())
     }
 
     fn force_rebuild(&self, unit: &Unit) -> bool {
-        self.target_packages
-            .contains(&unit.pkg.name().to_string())
+        self.target_packages.contains(&unit.pkg.name().to_string())
     }
 }

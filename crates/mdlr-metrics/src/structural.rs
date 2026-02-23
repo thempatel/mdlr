@@ -54,6 +54,7 @@ pub fn compute(graph: &Graph) -> StructuralMetrics {
     )
 }
 
+#[tracing::instrument(name = "compute_structural", skip_all)]
 pub fn compute_with_hub_thresholds(
     graph: &Graph,
     hub_min_fan_in: usize,

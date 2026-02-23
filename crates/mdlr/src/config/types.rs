@@ -258,28 +258,6 @@ impl Default for HubThresholds {
     }
 }
 
-/// Git configuration for change detection
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitConfig {
-    /// Base commit SHA to compare against when on main branch
-    #[serde(default)]
-    pub base_commit: Option<String>,
-
-    /// Name of the main branch (default: "main")
-    #[serde(default = "default_main_branch")]
-    pub main_branch: String,
-}
-
-fn default_main_branch() -> String {
-    "main".to_string()
-}
-
-impl Default for GitConfig {
-    fn default() -> Self {
-        Self { base_commit: None, main_branch: default_main_branch() }
-    }
-}
-
 /// Main configuration struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -289,8 +267,6 @@ pub struct Config {
     pub display: DisplayConfig,
     #[serde(default)]
     pub hub: HubThresholds,
-    #[serde(default)]
-    pub git: GitConfig,
 }
 
 #[cfg(test)]

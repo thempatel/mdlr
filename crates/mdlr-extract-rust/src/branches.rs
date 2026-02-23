@@ -15,7 +15,11 @@ pub fn count_branches(tcx: TyCtxt<'_>, body: &hir::Body<'_>) -> usize {
     count
 }
 
-fn visit_expr_for_branches(tcx: TyCtxt<'_>, expr: &hir::Expr<'_>, count: &mut usize) {
+fn visit_expr_for_branches(
+    tcx: TyCtxt<'_>,
+    expr: &hir::Expr<'_>,
+    count: &mut usize,
+) {
     match &expr.kind {
         // if / if-let → +1
         hir::ExprKind::If(cond, then_branch, else_branch) => {
@@ -68,7 +72,6 @@ fn visit_expr_for_branches(tcx: TyCtxt<'_>, expr: &hir::Expr<'_>, count: &mut us
         }
 
         // Recurse into all other expression kinds
-
         hir::ExprKind::Block(block, _) => {
             for stmt in block.stmts {
                 visit_stmt_for_branches(tcx, stmt, count);
@@ -172,7 +175,11 @@ fn visit_expr_for_branches(tcx: TyCtxt<'_>, expr: &hir::Expr<'_>, count: &mut us
     }
 }
 
-fn visit_stmt_for_branches(tcx: TyCtxt<'_>, stmt: &hir::Stmt<'_>, count: &mut usize) {
+fn visit_stmt_for_branches(
+    tcx: TyCtxt<'_>,
+    stmt: &hir::Stmt<'_>,
+    count: &mut usize,
+) {
     match &stmt.kind {
         hir::StmtKind::Let(local) => {
             if let Some(init) = local.init {

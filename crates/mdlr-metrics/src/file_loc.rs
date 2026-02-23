@@ -18,6 +18,7 @@ pub struct FileLocMetrics {
 
 impl FileLocMetrics {
     /// Compute file LOC metrics from a graph
+    #[tracing::instrument(name = "compute_file_loc", skip_all)]
     pub fn compute(graph: &Graph) -> Self {
         // Group units by file and find the max end_line per file
         let mut file_max_line: HashMap<String, usize> = HashMap::new();

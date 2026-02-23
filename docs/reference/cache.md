@@ -1,6 +1,6 @@
 # Cache System
 
-mdlr uses a local `.mdlr/` directory to cache extraction results, enabling fast incremental analysis.
+mdlr uses a local `.mdlr/` directory to cache extraction results for use by `ls` and `get` commands.
 
 ## Cache Directory Structure
 
@@ -14,13 +14,11 @@ mdlr uses a local `.mdlr/` directory to cache extraction results, enabling fast 
 
 ## How It Works
 
-### Change Detection
+### Extraction
 
-mdlr uses mtime (modification time) and file size to detect changes:
+`mdlr check` always extracts all files from the workspace using `mdlr-extract-rust`. There is no incremental/change-detection step — every `check` invocation processes the full codebase.
 
-1. On `analyze`, each source file's mtime/size is compared with the cached value
-2. If different or missing, the file is re-extracted
-3. If unchanged, cached units are loaded directly
+When `--save` is passed, the extracted results are written to the cache so that `ls` and `get` commands can read them without re-extracting.
 
 ### Per-File Cache Entry
 
@@ -29,43 +27,21 @@ Each source file has a corresponding cache file:
 | Field | Description |
 |-------|-------------|
 | `source_path` | Relative path to source file |
-| `mtime` | File modification time (UNIX epoch seconds) |
-| `size` | File size in bytes |
 | `units` | Extracted code units |
 | `cached_at` | When cache was created |
 
 Example: `src/main.rs` → `.mdlr/cache/src/main.json`
 
-### Project Index
-
-The `index.json` file tracks all known files:
-
-| Field | Description |
-|-------|-------------|
-| `version` | Schema version for migrations |
-| `files` | Map of path → {mtime, size} |
-| `last_scan` | Timestamp of last full scan |
-
 ## Commands
-
-### Check What Needs Analysis
-
-```bash
-# Show new/changed files
-mdlr todo
-
-# Also show files with untagged units
-mdlr todo --all
-```
 
 ### Run Analysis
 
 ```bash
-# Incremental analysis (only changed files)
-mdlr analyze
+# Analyze all files (does not write cache)
+mdlr check
 
-# Force re-analysis of all files
-mdlr analyze --force
+# Analyze and save results to cache for ls/get
+mdlr check --save
 ```
 
 ## Gitignore Integration
@@ -91,17 +67,6 @@ rm -rf .mdlr/
 ### Inspect Cache
 
 ```bash
-# View index
-cat .mdlr/index.json | jq .
-
 # View cached file
 cat .mdlr/cache/src/main.json | jq .
 ```
-
-## Performance
-
-For a typical project:
-
-- First run: All files extracted (slower)
-- Subsequent runs: Only changed files re-extracted (fast)
-- Cache lookup: O(1) per file using mtime/size comparison

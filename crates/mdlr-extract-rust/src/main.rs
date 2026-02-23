@@ -19,7 +19,7 @@ use rustc_driver::Callbacks;
 use rustc_interface::interface::Compiler;
 use rustc_middle::ty::TyCtxt;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -43,9 +43,9 @@ struct Cli {
     #[arg(long)]
     manifest_path: Option<PathBuf>,
 
-    /// Path to the JSON mapping file (source path → output path)
+    /// Output directory for per-file JSON results (mirrors source tree structure)
     #[arg(long)]
-    mapping: Option<PathBuf>,
+    output: Option<PathBuf>,
 
     /// Package names to extract from (if empty, extracts from all workspace members)
     #[arg(long)]
@@ -66,26 +66,15 @@ fn run() -> Result<()> {
 
 /// Uses cargo-as-library to orchestrate compilation.
 fn run_standalone_mode(cli: &Cli) -> Result<()> {
-    let manifest_path = cli
-        .manifest_path
-        .as_ref()
-        .context("--manifest-path is required")?;
+    let manifest_path =
+        cli.manifest_path.as_ref().context("--manifest-path is required")?;
 
-    let mapping_path = cli
-        .mapping
-        .as_ref()
-        .context("--mapping is required")?;
-
-    // Load the mapping file
-    let mapping_content = std::fs::read_to_string(mapping_path)
-        .with_context(|| format!("Failed to read mapping: {}", mapping_path.display()))?;
-    let mapping: HashMap<String, String> =
-        serde_json::from_str(&mapping_content).context("Failed to parse mapping JSON")?;
+    let output_dir = cli.output.as_ref().context("--output is required")?;
 
     // Canonicalize the manifest path
-    let manifest_path = manifest_path
-        .canonicalize()
-        .with_context(|| format!("Failed to resolve manifest path: {}", manifest_path.display()))?;
+    let manifest_path = manifest_path.canonicalize().with_context(|| {
+        format!("Failed to resolve manifest path: {}", manifest_path.display())
+    })?;
 
     // Ensure cargo-as-library uses the same rustc that our linked rustc_driver
     // came from. Without this, cargo may discover a different rustc (e.g. stable)
@@ -109,34 +98,11 @@ fn run_standalone_mode(cli: &Cli) -> Result<()> {
         .context("Failed to create cargo Workspace")?;
 
     // Determine which packages to compile and extract from.
-    // If --package was specified, use those. Otherwise, discover which workspace
-    // members contain files listed in the mapping.
     let target_packages: HashSet<String> = if !cli.package.is_empty() {
         cli.package.iter().cloned().collect()
     } else {
-        // Derive packages from the mapping: check which workspace member
-        // directories contain the source paths in the mapping.
-        let ws_root = ws.root().to_path_buf();
-        let mut packages = HashSet::new();
-        for member in ws.members() {
-            let pkg_dir = member.root();
-            let relative_dir = pkg_dir
-                .strip_prefix(&ws_root)
-                .unwrap_or(pkg_dir)
-                .to_string_lossy();
-            for source_path in mapping.keys() {
-                if source_path.starts_with(relative_dir.as_ref()) {
-                    packages.insert(member.name().to_string());
-                    break;
-                }
-            }
-        }
-        if packages.is_empty() {
-            // Fallback: all workspace members
-            ws.members().map(|p| p.name().to_string()).collect()
-        } else {
-            packages
-        }
+        // Extract from all workspace members
+        ws.members().map(|p| p.name().to_string()).collect()
     };
 
     // Set up compile options for check mode
@@ -153,8 +119,9 @@ fn run_standalone_mode(cli: &Cli) -> Result<()> {
     );
 
     // Create the executor
-    let exec: Arc<dyn cargo::core::compiler::Executor> =
-        Arc::new(executor::HirExtractExecutor::new(mapping, target_packages));
+    let exec: Arc<dyn cargo::core::compiler::Executor> = Arc::new(
+        executor::HirExtractExecutor::new(output_dir.clone(), target_packages),
+    );
 
     // Run compilation with our custom executor.
     // Don't treat errors as fatal — some packages may fail to compile but
@@ -167,7 +134,8 @@ fn run_standalone_mode(cli: &Cli) -> Result<()> {
 }
 
 struct HirExtractCallbacks {
-    mapping: HashMap<String, String>,
+    /// Output directory — per-file results are written as `<output_dir>/<source_path>.json`
+    output_dir: PathBuf,
 }
 
 impl Callbacks for HirExtractCallbacks {
@@ -181,7 +149,7 @@ impl Callbacks for HirExtractCallbacks {
         // Instead, let typeck results be computed on demand per-function
         // in calls::extract_calls(). Functions with errors get partial
         // extraction; functions without errors get full call resolution.
-        let units_by_file = visitor::extract_units(tcx, &self.mapping);
+        let units_by_file = visitor::extract_units(tcx);
 
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -189,29 +157,34 @@ impl Callbacks for HirExtractCallbacks {
             .unwrap_or(0);
 
         for (source_path, units) in units_by_file {
-            let output_path = match self.mapping.get(&source_path) {
-                Some(p) => PathBuf::from(p),
-                None => continue,
-            };
-
             let entry = FileCacheEntry {
                 source_path: PathBuf::from(&source_path),
                 units,
                 cached_at: timestamp,
             };
 
-            if let Some(parent) = output_path.parent() {
+            // Write to <output_dir>/<source_path>.json (mirroring source tree)
+            let mut output_file = self.output_dir.join(&source_path);
+            output_file.set_extension("json");
+
+            if let Some(parent) = output_file.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
 
             match serde_json::to_string_pretty(&entry) {
                 Ok(json) => {
-                    if let Err(e) = std::fs::write(&output_path, json) {
-                        eprintln!("Failed to write output for {}: {}", source_path, e);
+                    if let Err(e) = std::fs::write(&output_file, json) {
+                        eprintln!(
+                            "Failed to write output for {}: {}",
+                            source_path, e
+                        );
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to serialize output for {}: {}", source_path, e);
+                    eprintln!(
+                        "Failed to serialize output for {}: {}",
+                        source_path, e
+                    );
                 }
             }
         }
