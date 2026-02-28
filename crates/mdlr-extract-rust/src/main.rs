@@ -13,6 +13,7 @@ mod executor;
 mod field_access;
 mod scopes;
 mod visitor;
+mod walk;
 
 use anyhow::{Context, Result};
 use clap::Parser;

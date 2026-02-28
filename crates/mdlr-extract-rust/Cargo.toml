@@ -17,5 +17,8 @@ cargo = "0.87"
 cargo-util = "0.2"
 libc = "0.2"
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [package.metadata.rust-analyzer]
 rustc_private = true
