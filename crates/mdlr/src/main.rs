@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 mod cache;
 mod cli;
 mod config;
+mod ignore_commands;
 mod json_output;
+mod metrics_commands;
 mod metrics_rows;
 mod symbol_commands;
 mod tag_commands;
@@ -15,7 +17,7 @@ mod timing;
 mod walk;
 
 use cache::{CacheStore, FileCacheEntry};
-use cli::{Cli, Command, MetricsCommand, OutputFormat};
+use cli::{Cli, Command, OutputFormat};
 use json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
     build_file_loc_json, build_semantic_tags_json, build_struct_json,
@@ -28,10 +30,6 @@ use mdlr_metrics::{
 };
 use metrics_rows::{MetricsBundle, collect_metric_rows};
 use symbol_commands::{handle_get, handle_ls};
-use tag_commands::{
-    handle_tag_add, handle_tag_clear, handle_tag_list, handle_tag_remove,
-    handle_tag_show, verify_symbol_exists,
-};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -40,122 +38,22 @@ fn main() -> Result<()> {
         Command::Check { target, save, k, pretty, format, timing } => {
             handle_check(target.as_deref(), save, k, pretty, format, timing)
         }
-        Command::Metrics { command } => handle_metrics(command),
+        Command::Metrics { command } => {
+            metrics_commands::handle_metrics(command)
+        }
         Command::Prompt => handle_prompt(),
         Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
         Command::Get { symbol, format } => handle_get(&symbol, format),
         Command::Tag { symbol, add, remove, clear, list, format } => {
-            handle_tag(symbol, add, remove, clear, list, format)
+            tag_commands::handle_tag(symbol, add, remove, clear, list, format)
         }
         Command::Ignore { metric, symbol, remove, list } => {
-            handle_ignore(metric, symbol, remove, list)
+            let store = CacheStore::open(Path::new("."))?;
+            ignore_commands::handle_ignore(
+                &store, metric, symbol, remove, list,
+            )
         }
     }
-}
-
-fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
-    vec![
-        (
-            "dag_density",
-            "Ratio of edges to nodes in the dependency graph. High values indicate tightly coupled code; low values suggest isolated components.",
-        ),
-        (
-            "fan_in",
-            "Number of incoming dependencies to a unit. High values indicate core/shared code; very high may signal a bottleneck.",
-        ),
-        (
-            "fan_out",
-            "Number of outgoing dependencies from a unit. High values indicate a unit with many responsibilities that may need refactoring.",
-        ),
-        (
-            "function_size",
-            "Function size in lines of code. High values suggest functions that are hard to understand and test.",
-        ),
-        (
-            "params",
-            "Number of parameters on a function. High values (>4) often indicate a function doing too much or needing a parameter object.",
-        ),
-        (
-            "cyclomatic",
-            "Cyclomatic complexity (branches + 1) of a function. High values indicate complex control flow that is harder to test and maintain.",
-        ),
-        (
-            "max_scope",
-            "Largest single scope block (if/else body, match arm, loop body) within a function in lines. High values indicate oversized blocks that should be extracted.",
-        ),
-        (
-            "methods_per_struct",
-            "Number of methods in a struct. High values may indicate a type with too many responsibilities.",
-        ),
-        (
-            "lcom",
-            "Lack of Cohesion of Methods (LCOM4). Counts connected components of methods sharing fields or calls. 1 = cohesive, 2+ = struct has unrelated groups and could be split.",
-        ),
-        (
-            "file_loc",
-            "Lines of code per file. High values indicate large files that may be hard to navigate and maintain.",
-        ),
-        (
-            "tag_coverage",
-            "Percentage of units with semantic tags applied. Low values indicate incomplete conceptual mapping of the codebase.",
-        ),
-        (
-            "conceptual_fan_out",
-            "Number of distinct semantic concepts a unit participates in. High values indicate mixed responsibilities across domains.",
-        ),
-        (
-            "concept_scattering",
-            "How spread out a concept is across files. High values indicate poor cohesion; the concept should be consolidated.",
-        ),
-        (
-            "cross_concept_ratio",
-            "Percentage of edges crossing concept boundaries. High values indicate tight coupling between different domains.",
-        ),
-    ]
-}
-
-fn handle_metrics(command: MetricsCommand) -> Result<()> {
-    match command {
-        MetricsCommand::Ls => {
-            for (name, description) in get_metric_descriptions() {
-                println!("{}", name);
-                println!("  {}", description);
-                println!();
-            }
-        }
-        MetricsCommand::Get { name } => {
-            let descriptions = get_metric_descriptions();
-            let metric = descriptions.iter().find(|(n, _)| *n == name);
-
-            match metric {
-                Some((name, description)) => {
-                    println!("{}", name);
-                    println!("  {}", description);
-                    println!();
-
-                    let config = config::load()?;
-                    if let Some(t) = config.thresholds.get(name) {
-                        println!("thresholds:");
-                        println!("  excellent  < {}", t.excellent);
-                        println!("  good       < {}", t.good);
-                        println!("  fair       < {}", t.fair);
-                        println!("  poor       < {}", t.poor);
-                        println!("  critical   >= {}", t.poor);
-                    } else {
-                        println!("(no thresholds defined)");
-                    }
-                }
-                None => {
-                    bail!(
-                        "Unknown metric '{}'. Run 'mdlr metrics ls' to see available metrics.",
-                        name
-                    );
-                }
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn handle_prompt() -> Result<()> {
@@ -649,149 +547,4 @@ fn handle_check(
     }
 
     result
-}
-
-fn handle_tag(
-    symbol: Option<String>,
-    add: Vec<String>,
-    remove: Option<String>,
-    clear: bool,
-    list: bool,
-    format: OutputFormat,
-) -> Result<()> {
-    let store = CacheStore::open(Path::new("."))?;
-
-    if list {
-        return handle_tag_list(&store, format);
-    }
-
-    let symbol = symbol.ok_or_else(|| {
-        anyhow::anyhow!("Symbol ID is required. Use 'mdlr tag --list' to see all tags, or specify a symbol.")
-    })?;
-
-    verify_symbol_exists(&store, &symbol)?;
-
-    if clear {
-        return handle_tag_clear(&store, &symbol);
-    }
-
-    if let Some(ref tag) = remove {
-        return handle_tag_remove(&store, &symbol, tag);
-    }
-
-    if !add.is_empty() {
-        return handle_tag_add(&store, &symbol, &add);
-    }
-
-    handle_tag_show(&store, &symbol, format)
-}
-
-/// Valid metric names that can be ignored
-const VALID_METRICS: &[&str] = &[
-    "fan_in",
-    "fan_out",
-    "function_size",
-    "params",
-    "cyclomatic",
-    "max_scope",
-    "methods_per_struct",
-    "lcom",
-    "file_loc",
-];
-
-// TODO: Make it so that agents cannot ignore, but humans can
-fn handle_ignore(
-    metric: Option<String>,
-    symbol: Option<String>,
-    remove: bool,
-    list: bool,
-) -> Result<()> {
-    let store = CacheStore::open(Path::new("."))?;
-
-    if list {
-        return handle_ignore_list(&store);
-    }
-
-    let metric = metric.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Metric name is required. Valid metrics: {}",
-            VALID_METRICS.join(", ")
-        )
-    })?;
-
-    // Validate metric name
-    if !VALID_METRICS.contains(&metric.as_str()) {
-        bail!(
-            "Unknown metric '{}'. Valid metrics: {}",
-            metric,
-            VALID_METRICS.join(", ")
-        );
-    }
-
-    let symbol =
-        symbol.ok_or_else(|| anyhow::anyhow!("Symbol ID is required."))?;
-
-    if remove {
-        handle_ignore_remove(&store, &metric, &symbol)
-    } else {
-        handle_ignore_add(&store, &metric, &symbol)
-    }
-}
-
-fn handle_ignore_list(store: &CacheStore) -> Result<()> {
-    let ignores = store.load_ignores()?;
-
-    if ignores.is_empty() {
-        println!("No ignores configured.");
-        return Ok(());
-    }
-
-    // Collect and sort for consistent output
-    let mut entries: Vec<_> = ignores.ignores.iter().collect();
-    entries.sort_by_key(|(symbol, _)| *symbol);
-
-    for (symbol, metrics) in entries {
-        for metric in metrics {
-            println!("{}\t{}", metric, symbol);
-        }
-    }
-
-    Ok(())
-}
-
-fn handle_ignore_add(
-    store: &CacheStore,
-    metric: &str,
-    symbol: &str,
-) -> Result<()> {
-    let mut ignores = store.load_ignores()?;
-
-    if ignores.is_ignored(symbol, metric) {
-        println!("Already ignoring {} for {}", metric, symbol);
-        return Ok(());
-    }
-
-    ignores.add(symbol, metric);
-    store.save_ignores(&ignores)?;
-    println!("Ignoring {} for {}", metric, symbol);
-
-    Ok(())
-}
-
-fn handle_ignore_remove(
-    store: &CacheStore,
-    metric: &str,
-    symbol: &str,
-) -> Result<()> {
-    let mut ignores = store.load_ignores()?;
-
-    if !ignores.remove(symbol, metric) {
-        println!("No ignore found for {} on {}", metric, symbol);
-        return Ok(());
-    }
-
-    store.save_ignores(&ignores)?;
-    println!("Removed ignore for {} on {}", metric, symbol);
-
-    Ok(())
 }

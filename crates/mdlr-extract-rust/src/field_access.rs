@@ -48,6 +48,29 @@ impl<'a, 'tcx> FieldAccessVisitor<'a, 'tcx> {
             vec.push(field_name);
         }
     }
+
+    /// Walk assignment: LHS in write context, RHS in read context.
+    /// Used by both plain assignment and compound assignment (+=, etc.).
+    fn walk_write_and_read(
+        &mut self,
+        lhs: &hir::Expr<'tcx>,
+        rhs: &hir::Expr<'tcx>,
+    ) {
+        self.walk_preserving_ctx(lhs, FieldContext::WriteLhs);
+        self.walk_preserving_ctx(rhs, FieldContext::Read);
+    }
+
+    /// Walk a sub-expression preserving the parent context.
+    /// Used for expression forms (like indexing) that propagate write
+    /// context to their base expression so `self.items[i] = v` correctly
+    /// records `items` as a write.
+    fn walk_preserving_ctx(
+        &mut self,
+        expr: &hir::Expr<'tcx>,
+        ctx: FieldContext,
+    ) {
+        self.walk_expr(expr, ctx);
+    }
 }
 
 impl<'a, 'tcx> ExprVisitor<'tcx> for FieldAccessVisitor<'a, 'tcx> {
@@ -67,7 +90,7 @@ impl<'a, 'tcx> ExprVisitor<'tcx> for FieldAccessVisitor<'a, 'tcx> {
             self.record_field(ident.as_str().to_string(), ctx);
         } else {
             // For chained access like self.field.subfield, the inner field IS a read
-            self.walk_expr(base, FieldContext::Read);
+            self.walk_preserving_ctx(base, FieldContext::Read);
         }
     }
 
@@ -77,8 +100,7 @@ impl<'a, 'tcx> ExprVisitor<'tcx> for FieldAccessVisitor<'a, 'tcx> {
         rhs: &hir::Expr<'tcx>,
         _ctx: FieldContext,
     ) {
-        self.walk_expr(lhs, FieldContext::WriteLhs);
-        self.walk_expr(rhs, FieldContext::Read);
+        self.walk_write_and_read(lhs, rhs);
     }
 
     fn visit_assign_op(
@@ -88,12 +110,7 @@ impl<'a, 'tcx> ExprVisitor<'tcx> for FieldAccessVisitor<'a, 'tcx> {
         rhs: &hir::Expr<'tcx>,
         _ctx: FieldContext,
     ) {
-        self.walk_expr(lhs, FieldContext::WriteLhs);
-        self.walk_expr(rhs, FieldContext::Read);
-    }
-
-    fn visit_addr_of(&mut self, operand: &hir::Expr<'tcx>, ctx: FieldContext) {
-        self.walk_expr(operand, ctx);
+        self.walk_write_and_read(lhs, rhs);
     }
 
     fn visit_index(
@@ -102,24 +119,8 @@ impl<'a, 'tcx> ExprVisitor<'tcx> for FieldAccessVisitor<'a, 'tcx> {
         idx: &hir::Expr<'tcx>,
         ctx: FieldContext,
     ) {
-        self.walk_expr(base, ctx);
-        self.walk_expr(idx, FieldContext::Read);
-    }
-
-    fn visit_method_call(
-        &mut self,
-        _segment: &'tcx hir::PathSegment<'tcx>,
-        receiver: &hir::Expr<'tcx>,
-        args: &'tcx [hir::Expr<'tcx>],
-        _span: rustc_span::Span,
-        _hir_id: hir::HirId,
-        _ctx: FieldContext,
-    ) {
-        // Don't treat the direct receiver as a write context
-        self.walk_expr(receiver, FieldContext::Read);
-        for arg in args.iter() {
-            self.walk_expr(arg, FieldContext::Read);
-        }
+        self.walk_preserving_ctx(base, ctx);
+        self.walk_preserving_ctx(idx, FieldContext::Read);
     }
 }
 

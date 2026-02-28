@@ -1,9 +1,47 @@
 //! Tag-related command handlers.
 
+use std::path::Path;
+
 use crate::cache::CacheStore;
 use crate::cli::OutputFormat;
 use crate::walk::SourceWalker;
 use anyhow::{Result, bail};
+
+/// Route tag subcommand to the appropriate handler.
+pub fn handle_tag(
+    symbol: Option<String>,
+    add: Vec<String>,
+    remove: Option<String>,
+    clear: bool,
+    list: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    let store = CacheStore::open(Path::new("."))?;
+
+    if list {
+        return handle_tag_list(&store, format);
+    }
+
+    let symbol = symbol.ok_or_else(|| {
+        anyhow::anyhow!("Symbol ID is required. Use 'mdlr tag --list' to see all tags, or specify a symbol.")
+    })?;
+
+    verify_symbol_exists(&store, &symbol)?;
+
+    if clear {
+        return handle_tag_clear(&store, &symbol);
+    }
+
+    if let Some(ref tag) = remove {
+        return handle_tag_remove(&store, &symbol, tag);
+    }
+
+    if !add.is_empty() {
+        return handle_tag_add(&store, &symbol, &add);
+    }
+
+    handle_tag_show(&store, &symbol, format)
+}
 
 /// List all tags
 pub fn handle_tag_list(

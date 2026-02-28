@@ -180,6 +180,146 @@ impl FloatMetricSpec<'_> {
     }
 }
 
+/// Bundled metric specifications for collection
+struct MetricSpecs<'a> {
+    int_specs: Vec<IntMetricSpec<'a>>,
+    fan_in_spec: HubFilteredFanInSpec<'a>,
+    lcom_spec: IntMetricSpec<'a>,
+    float_specs: Vec<FloatMetricSpec<'a>>,
+}
+
+impl<'a> MetricSpecs<'a> {
+    fn new(m: &'a MetricsBundle, config: &'a Config) -> Self {
+        let t = &config.thresholds;
+        MetricSpecs {
+            int_specs: vec![
+                IntMetricSpec {
+                    name: "fan_out",
+                    distribution: &m.structural.fan_out.distribution,
+                    thresholds: &t.fan_out_max,
+                    min_value: 0,
+                },
+                IntMetricSpec {
+                    name: "function_size",
+                    distribution: &m.complexity.size.distribution,
+                    thresholds: &t.function_size,
+                    min_value: 1,
+                },
+                IntMetricSpec {
+                    name: "params",
+                    distribution: &m.complexity.params.distribution,
+                    thresholds: &t.params,
+                    min_value: 0,
+                },
+                IntMetricSpec {
+                    name: "cyclomatic",
+                    distribution: &m.complexity.cyclomatic.distribution,
+                    thresholds: &t.cyclomatic,
+                    min_value: 1,
+                },
+                IntMetricSpec {
+                    name: "max_scope",
+                    distribution: &m.complexity.max_scope.distribution,
+                    thresholds: &t.max_scope,
+                    min_value: 0,
+                },
+                IntMetricSpec {
+                    name: "methods_per_struct",
+                    distribution: &m
+                        .struct_metrics
+                        .methods_per_struct
+                        .distribution,
+                    thresholds: &t.methods_per_struct,
+                    min_value: 0,
+                },
+                IntMetricSpec {
+                    name: "file_loc",
+                    distribution: &m.file_loc.distribution,
+                    thresholds: &t.file_loc,
+                    min_value: 0,
+                },
+            ],
+            fan_in_spec: HubFilteredFanInSpec {
+                distribution: &m.structural.fan_in.distribution,
+                thresholds: &t.fan_in_max,
+                hubs: &m.structural.hubs,
+            },
+            lcom_spec: IntMetricSpec {
+                name: "lcom",
+                distribution: &m.struct_metrics.lcom.distribution,
+                thresholds: &t.lcom,
+                min_value: 0,
+            },
+            float_specs: vec![],
+        }
+    }
+
+    fn collect_filtered(&self, filter: &str) -> Vec<MetricRow> {
+        let mut rows = Vec::new();
+        for spec in &self.int_specs {
+            spec.collect_filtered(&mut rows, filter);
+        }
+        self.fan_in_spec.collect_filtered(&mut rows, filter);
+        self.lcom_spec.collect_filtered(&mut rows, filter);
+        for spec in &self.float_specs {
+            spec.collect_filtered(&mut rows, filter);
+        }
+        rows
+    }
+
+    fn collect_all_scored(&self) -> Vec<ScoredRow> {
+        let mut rows = Vec::new();
+        for spec in &self.int_specs {
+            spec.collect_all(&mut rows);
+        }
+        self.fan_in_spec.collect_all(&mut rows);
+        self.lcom_spec.collect_all(&mut rows);
+        for spec in &self.float_specs {
+            spec.collect_all(&mut rows);
+        }
+        rows
+    }
+}
+
+/// Canonical metric display order
+const METRIC_ORDER: &[&str] = &[
+    "fan_out",
+    "fan_in",
+    "function_size",
+    "params",
+    "cyclomatic",
+    "max_scope",
+    "methods_per_struct",
+    "file_loc",
+    "lcom",
+];
+
+/// Sort scored rows by severity, apply limit, then group by metric in canonical order.
+fn sort_and_group(mut scored_rows: Vec<ScoredRow>, k: i32) -> Vec<MetricRow> {
+    scored_rows.sort_by(|a, b| b.severity().cmp(&a.severity()));
+
+    let selected: Vec<ScoredRow> = if k < 0 {
+        scored_rows
+    } else {
+        scored_rows.into_iter().take(k as usize).collect()
+    };
+
+    let mut grouped: HashMap<String, Vec<ScoredRow>> = HashMap::new();
+    for row in selected {
+        grouped.entry(row.metric_name.clone()).or_default().push(row);
+    }
+
+    let mut rows = Vec::new();
+    for metric_name in METRIC_ORDER {
+        if let Some(metric_rows) = grouped.remove(*metric_name) {
+            for row in metric_rows {
+                rows.push(row.into_row());
+            }
+        }
+    }
+    rows
+}
+
 /// Collect metric rows for text output.
 ///
 /// The `k` parameter limits how many rows are collected globally:
@@ -188,11 +328,6 @@ impl FloatMetricSpec<'_> {
 ///
 /// Rows are selected by severity (critical first, then poor, fair, good, excellent)
 /// across all metric types, then grouped by metric type for display.
-///
-/// The `symbol_filter` parameter, when `Some`, limits output to only the
-/// matching symbol. This is used when filtering by a specific symbol ID.
-///
-/// The `ignores` parameter filters out metrics that have been explicitly ignored.
 pub fn collect_metric_rows(
     metrics: &MetricsBundle,
     config: &Config,
@@ -200,149 +335,22 @@ pub fn collect_metric_rows(
     symbol_filter: Option<&str>,
     ignores: &Ignores,
 ) -> Vec<MetricRow> {
-    let t = &config.thresholds;
-    let m = metrics;
+    let specs = MetricSpecs::new(metrics, config);
 
-    // Integer metrics (excluding fan_in which has special hub filtering)
-    let int_specs = [
-        IntMetricSpec {
-            name: "fan_out",
-            distribution: &m.structural.fan_out.distribution,
-            thresholds: &t.fan_out_max,
-            min_value: 0,
-        },
-        IntMetricSpec {
-            name: "function_size",
-            distribution: &m.complexity.size.distribution,
-            thresholds: &t.function_size,
-            min_value: 1,
-        },
-        IntMetricSpec {
-            name: "params",
-            distribution: &m.complexity.params.distribution,
-            thresholds: &t.params,
-            min_value: 0,
-        },
-        IntMetricSpec {
-            name: "cyclomatic",
-            distribution: &m.complexity.cyclomatic.distribution,
-            thresholds: &t.cyclomatic,
-            min_value: 1,
-        },
-        IntMetricSpec {
-            name: "max_scope",
-            distribution: &m.complexity.max_scope.distribution,
-            thresholds: &t.max_scope,
-            min_value: 0,
-        },
-        IntMetricSpec {
-            name: "methods_per_struct",
-            distribution: &m.struct_metrics.methods_per_struct.distribution,
-            thresholds: &t.methods_per_struct,
-            min_value: 0,
-        },
-        IntMetricSpec {
-            name: "file_loc",
-            distribution: &m.file_loc.distribution,
-            thresholds: &t.file_loc,
-            min_value: 0,
-        },
-    ];
-
-    // Hub-filtered fan_in metric (only flags units with high fan_in AND high fan_out)
-    let fan_in_spec = HubFilteredFanInSpec {
-        distribution: &m.structural.fan_in.distribution,
-        thresholds: &t.fan_in_max,
-        hubs: &m.structural.hubs,
-    };
-
-    // LCOM4 (integer metric: connected components)
-    let lcom_spec = IntMetricSpec {
-        name: "lcom",
-        distribution: &m.struct_metrics.lcom.distribution,
-        thresholds: &t.lcom,
-        min_value: 0,
-    };
-
-    // Float metrics (currently none)
-    let float_specs: [FloatMetricSpec; 0] = [];
-
-    // Handle symbol filter mode separately (no global sorting)
     if let Some(filter) = symbol_filter {
-        let mut rows: Vec<MetricRow> = Vec::new();
-        for spec in &int_specs {
-            spec.collect_filtered(&mut rows, filter);
-        }
-        fan_in_spec.collect_filtered(&mut rows, filter);
-        lcom_spec.collect_filtered(&mut rows, filter);
-        for spec in &float_specs {
-            spec.collect_filtered(&mut rows, filter);
-        }
-        // Filter out ignored metrics
+        let mut rows = specs.collect_filtered(filter);
         rows.retain(|(metric, symbol, _, _)| {
             !ignores.is_ignored(symbol, metric)
         });
         return rows;
     }
 
-    // Collect all rows with severity scores
-    let mut scored_rows: Vec<ScoredRow> = Vec::new();
-    for spec in &int_specs {
-        spec.collect_all(&mut scored_rows);
-    }
-    fan_in_spec.collect_all(&mut scored_rows);
-    lcom_spec.collect_all(&mut scored_rows);
-    for spec in &float_specs {
-        spec.collect_all(&mut scored_rows);
-    }
-
-    // Filter out ignored metrics before sorting
+    let mut scored_rows = specs.collect_all_scored();
     scored_rows
         .retain(|row| !ignores.is_ignored(&row.symbol, &row.metric_name));
 
-    // Sort by severity descending (worst first)
-    scored_rows.sort_by(|a, b| b.severity().cmp(&a.severity()));
-
-    // Apply global limit
-    let selected: Vec<ScoredRow> = if k < 0 {
-        scored_rows
-    } else {
-        scored_rows.into_iter().take(k as usize).collect()
-    };
-
-    // Group by metric type to maintain display grouping
-    let mut grouped: std::collections::HashMap<String, Vec<ScoredRow>> =
-        std::collections::HashMap::new();
-    for row in selected {
-        grouped.entry(row.metric_name.clone()).or_default().push(row);
-    }
-
-    // Define metric order for consistent output
-    let metric_order = [
-        "fan_out",
-        "fan_in",
-        "function_size",
-        "params",
-        "cyclomatic",
-        "max_scope",
-        "methods_per_struct",
-        "file_loc",
-        "lcom",
-    ];
-
-    // Convert to MetricRows in metric order
-    let mut rows: Vec<MetricRow> = Vec::new();
-    for metric_name in &metric_order {
-        if let Some(metric_rows) = grouped.remove(*metric_name) {
-            for row in metric_rows {
-                rows.push(row.into_row());
-            }
-        }
-    }
-
-    // Conceptual metrics (if tags exist)
-    collect_conceptual_metrics(&mut rows, m, k);
-
+    let mut rows = sort_and_group(scored_rows, k);
+    collect_conceptual_metrics(&mut rows, metrics, k);
     rows
 }
 
