@@ -37,6 +37,19 @@ struct FieldAccessVisitor<'a, 'tcx> {
     writes: &'a mut Vec<String>,
 }
 
+impl<'a, 'tcx> FieldAccessVisitor<'a, 'tcx> {
+    /// Record a field name as read or written (deduplicating).
+    fn record_field(&mut self, field_name: String, ctx: FieldContext) {
+        let vec = match ctx {
+            FieldContext::WriteLhs => &mut self.writes,
+            FieldContext::Read => &mut self.reads,
+        };
+        if !vec.contains(&field_name) {
+            vec.push(field_name);
+        }
+    }
+}
+
 impl<'a, 'tcx> ExprVisitor<'tcx> for FieldAccessVisitor<'a, 'tcx> {
     type Ctx = FieldContext;
 
@@ -51,19 +64,7 @@ impl<'a, 'tcx> ExprVisitor<'tcx> for FieldAccessVisitor<'a, 'tcx> {
         ctx: FieldContext,
     ) {
         if is_self_expr(base) {
-            let field_name = ident.as_str().to_string();
-            match ctx {
-                FieldContext::WriteLhs => {
-                    if !self.writes.contains(&field_name) {
-                        self.writes.push(field_name);
-                    }
-                }
-                FieldContext::Read => {
-                    if !self.reads.contains(&field_name) {
-                        self.reads.push(field_name);
-                    }
-                }
-            }
+            self.record_field(ident.as_str().to_string(), ctx);
         } else {
             // For chained access like self.field.subfield, the inner field IS a read
             self.walk_expr(base, FieldContext::Read);

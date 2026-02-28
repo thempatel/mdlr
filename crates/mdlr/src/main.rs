@@ -480,6 +480,24 @@ fn format_json_output(
     Ok(())
 }
 
+/// Insert a metric entry for a symbol if found in the distribution.
+fn insert_symbol_metric(
+    metrics: &mut serde_json::Map<String, serde_json::Value>,
+    name: &str,
+    distribution: &[(String, usize)],
+    thresholds: &config::MetricThresholds,
+    symbol_id: &str,
+) {
+    if let Some((_, value)) = distribution.iter().find(|(n, _)| n == symbol_id)
+    {
+        let bucket = thresholds.evaluate(*value as f64);
+        metrics.insert(
+            name.to_string(),
+            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
+        );
+    }
+}
+
 /// Build JSON output for a specific symbol
 fn build_symbol_json(
     computed: &ComputedMetrics,
@@ -487,120 +505,46 @@ fn build_symbol_json(
     symbol_id: &str,
 ) -> serde_json::Value {
     let mut metrics = serde_json::Map::new();
+    let t = &config.thresholds;
 
-    // Fan-in and fan-out from structural metrics
-    if let Some((_, value)) = computed
-        .structural
-        .fan_in
-        .distribution
-        .iter()
-        .find(|(name, _)| name == symbol_id)
-    {
-        let bucket = config.thresholds.fan_in_max.evaluate(*value as f64);
-        metrics.insert(
-            "fan_in".to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
-        );
-    }
+    let metric_sources: &[(
+        &str,
+        &[(String, usize)],
+        &config::MetricThresholds,
+    )] = &[
+        ("fan_in", &computed.structural.fan_in.distribution, &t.fan_in_max),
+        ("fan_out", &computed.structural.fan_out.distribution, &t.fan_out_max),
+        (
+            "function_size",
+            &computed.complexity.size.distribution,
+            &t.function_size,
+        ),
+        ("params", &computed.complexity.params.distribution, &t.params),
+        (
+            "cyclomatic",
+            &computed.complexity.cyclomatic.distribution,
+            &t.cyclomatic,
+        ),
+        (
+            "max_scope",
+            &computed.complexity.max_scope.distribution,
+            &t.max_scope,
+        ),
+        (
+            "methods_per_struct",
+            &computed.struct_metrics.methods_per_struct.distribution,
+            &t.methods_per_struct,
+        ),
+        ("lcom", &computed.struct_metrics.lcom.distribution, &t.lcom),
+    ];
 
-    if let Some((_, value)) = computed
-        .structural
-        .fan_out
-        .distribution
-        .iter()
-        .find(|(name, _)| name == symbol_id)
-    {
-        let bucket = config.thresholds.fan_out_max.evaluate(*value as f64);
-        metrics.insert(
-            "fan_out".to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
-        );
-    }
-
-    // Complexity metrics
-    if let Some((_, value)) = computed
-        .complexity
-        .size
-        .distribution
-        .iter()
-        .find(|(name, _)| name == symbol_id)
-    {
-        let bucket = config.thresholds.function_size.evaluate(*value as f64);
-        metrics.insert(
-            "function_size".to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
-        );
-    }
-
-    if let Some((_, value)) = computed
-        .complexity
-        .params
-        .distribution
-        .iter()
-        .find(|(name, _)| name == symbol_id)
-    {
-        let bucket = config.thresholds.params.evaluate(*value as f64);
-        metrics.insert(
-            "params".to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
-        );
-    }
-
-    if let Some((_, value)) = computed
-        .complexity
-        .cyclomatic
-        .distribution
-        .iter()
-        .find(|(name, _)| name == symbol_id)
-    {
-        let bucket = config.thresholds.cyclomatic.evaluate(*value as f64);
-        metrics.insert(
-            "cyclomatic".to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
-        );
-    }
-
-    if let Some((_, value)) = computed
-        .complexity
-        .max_scope
-        .distribution
-        .iter()
-        .find(|(name, _)| name == symbol_id)
-    {
-        let bucket = config.thresholds.max_scope.evaluate(*value as f64);
-        metrics.insert(
-            "max_scope".to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
-        );
-    }
-
-    // Struct metrics
-    if let Some((_, value)) = computed
-        .struct_metrics
-        .methods_per_struct
-        .distribution
-        .iter()
-        .find(|(name, _)| name == symbol_id)
-    {
-        let bucket =
-            config.thresholds.methods_per_struct.evaluate(*value as f64);
-        metrics.insert(
-            "methods_per_struct".to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
-        );
-    }
-
-    if let Some((_, value)) = computed
-        .struct_metrics
-        .lcom
-        .distribution
-        .iter()
-        .find(|(name, _)| name == symbol_id)
-    {
-        let bucket = config.thresholds.lcom.evaluate(*value as f64);
-        metrics.insert(
-            "lcom".to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
+    for (name, distribution, thresholds) in metric_sources {
+        insert_symbol_metric(
+            &mut metrics,
+            name,
+            distribution,
+            thresholds,
+            symbol_id,
         );
     }
 
@@ -617,6 +561,39 @@ fn build_symbol_json(
     output
 }
 
+/// Set up timing instrumentation if requested, returns a printer to call after work is done.
+fn setup_timing(enabled: bool) -> Option<timing::TimingPrinter> {
+    if !enabled {
+        return None;
+    }
+    let (layer, printer) = timing::TimingLayer::new();
+    let subscriber = tracing_subscriber::registry::Registry::default();
+    use tracing_subscriber::layer::SubscriberExt;
+    let subscriber = subscriber.with(layer);
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("failed to set tracing subscriber");
+    Some(printer)
+}
+
+/// Load cache entries and collect units matching the filter.
+fn load_filtered_units(
+    store: &CacheStore,
+    filter: &CheckFilter,
+) -> Result<(Vec<FileCacheEntry>, Vec<Unit>)> {
+    let mut entries = Vec::new();
+    load_entries_from_dir(store.cache_dir(), &mut entries)?;
+
+    let mut units = Vec::new();
+    for entry in &entries {
+        let file_path = store.root().join(&entry.source_path);
+        if passes_path_filter(&file_path, filter) {
+            units.extend(entry.units.clone());
+        }
+    }
+
+    Ok((entries, units))
+}
+
 fn handle_check(
     target: Option<&str>,
     save: bool,
@@ -625,39 +602,13 @@ fn handle_check(
     format: OutputFormat,
     timing: bool,
 ) -> Result<()> {
-    let printer = if timing {
-        let (layer, printer) = timing::TimingLayer::new();
-        let subscriber = tracing_subscriber::registry::Registry::default();
-        use tracing_subscriber::layer::SubscriberExt;
-        let subscriber = subscriber.with(layer);
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("failed to set tracing subscriber");
-        Some(printer)
-    } else {
-        None
-    };
-
+    let printer = setup_timing(timing);
     let ctx = CheckContext::new()?;
     let filter = parse_check_filter(target, &ctx.cwd);
 
-    // Extract all units from the workspace into .mdlr/cache/
     extract_rust(&ctx.store)?;
 
-    // Load all extracted entries from cache
-    let mut entries = Vec::new();
-    load_entries_from_dir(ctx.store.cache_dir(), &mut entries)?;
-
-    // Filter entries by path, collect units
-    let mut units = Vec::new();
-
-    for entry in &entries {
-        let file_path = ctx.store.root().join(&entry.source_path);
-        if !passes_path_filter(&file_path, &filter) {
-            continue;
-        }
-
-        units.extend(entry.units.clone());
-    }
+    let (entries, units) = load_filtered_units(&ctx.store, &filter)?;
 
     // Validate symbol exists before building graph (bail if not found)
     if let CheckFilter::Symbol(symbol_id) = &filter {
@@ -670,14 +621,11 @@ fn handle_check(
     }
 
     if save {
-        // Commit any staged tag changes
         ctx.store.commit_staged_tags()?;
     }
 
-    // Build full graph with all units to capture all edges (including callers)
     let computed = compute_all_metrics(units, &ctx.store, &ctx.config);
 
-    // Filter is applied at output time, not graph construction time
     let result = match format {
         OutputFormat::Text => format_text_output(
             &computed,
