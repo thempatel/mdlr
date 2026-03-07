@@ -4,7 +4,7 @@ members = [
     "crates/mdlr-core",
     "crates/mdlr-metrics",
     "crates/mdlr",
-    "crates/mdlr-extract-rust",
+    "tools/mdlr-extract-rust",
 ]
 
 [workspace.package]

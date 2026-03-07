@@ -163,7 +163,7 @@ fn find_extract_rust_binary() -> Result<PathBuf> {
     }
     bail!(
         "Could not find mdlr-extract-rust binary. \
-         Build it with: cargo install --path crates/mdlr-extract-rust"
+         Build it with: cargo install --path tools/mdlr-extract-rust"
     );
 }
 
