@@ -3,7 +3,6 @@ pub mod display;
 pub mod file_loc;
 pub mod struct_metrics;
 pub mod structural;
-pub mod tags;
 
 pub use complexity::ComplexityMetrics;
 pub use display::{
@@ -15,8 +14,4 @@ pub use struct_metrics::{LcomMetrics, MethodsPerStruct, StructMetrics};
 pub use structural::{
     DEFAULT_HUB_MIN_FAN_IN, DEFAULT_HUB_MIN_FAN_OUT, FanMetrics, HubInfo,
     StructuralMetrics, compute, compute_with_hub_thresholds,
-};
-pub use tags::{
-    ConceptScatter, ConceptualMetrics, CrossConceptEdges, FanDistribution,
-    SemanticTags, TagMetrics,
 };

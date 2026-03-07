@@ -16,9 +16,6 @@ pub enum Command {
     Check {
         /// Path or symbol to constrain analysis to. Can be a file, directory, or fully qualified symbol ID (e.g., 'src/main.rs::handle_check').
         target: Option<String>,
-        /// Save extraction results to cache (by default, check is read-only)
-        #[arg(long)]
-        save: bool,
         /// Max opportunities to show per metric (-1 for all)
         #[arg(short, default_value = "10", allow_hyphen_values = true)]
         k: i32,
@@ -55,26 +52,6 @@ pub enum Command {
     Get {
         /// Symbol ID to retrieve
         symbol: String,
-        /// Output format
-        #[arg(long, default_value = "text")]
-        format: OutputFormat,
-    },
-    /// Manage semantic tags on symbols
-    Tag {
-        /// Symbol ID to tag (required unless --list is used)
-        symbol: Option<String>,
-        /// Add tags to the symbol (can be used multiple times)
-        #[arg(long)]
-        add: Vec<String>,
-        /// Remove a tag from the symbol
-        #[arg(long)]
-        remove: Option<String>,
-        /// Clear all tags from the symbol
-        #[arg(long)]
-        clear: bool,
-        /// List all semantic tags in the project
-        #[arg(long)]
-        list: bool,
         /// Output format
         #[arg(long, default_value = "text")]
         format: OutputFormat,

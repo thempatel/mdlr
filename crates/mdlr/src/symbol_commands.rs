@@ -9,13 +9,12 @@ use crate::cli::OutputFormat;
 use crate::walk::SourceWalker;
 use mdlr_core::{Unit, UnitKind};
 
-/// Collect all units with their tags, optionally filtered by kind.
-fn collect_units_with_tags(
+/// Collect all units, optionally filtered by kind.
+fn collect_units(
     store: &CacheStore,
     kind_filter: Option<UnitKind>,
-) -> Result<Vec<(Unit, Vec<String>)>> {
+) -> Result<Vec<Unit>> {
     let walker = SourceWalker::new(store.root());
-    let semantic_tags = store.tags().load_tags_with_staged()?;
     let mut all_units = Vec::new();
 
     for file_path in walker.walk() {
@@ -26,8 +25,7 @@ fn collect_units_with_tags(
                         continue;
                     }
                 }
-                let tags = semantic_tags.get_tags(&unit.id).to_vec();
-                all_units.push((unit, tags));
+                all_units.push(unit);
             }
         }
     }
@@ -43,50 +41,47 @@ pub fn handle_ls(
 ) -> Result<()> {
     let store = CacheStore::open(path)?;
     let kind_filter = kind_filter.map(|k| parse_unit_kind(&k)).transpose()?;
-    let all_units = collect_units_with_tags(&store, kind_filter)?;
+    let all_units = collect_units(&store, kind_filter)?;
 
     match format {
         OutputFormat::Text => print_ls_text(&all_units),
-        OutputFormat::Json => print_ls_json(all_units)?,
+        OutputFormat::Json => print_ls_json(&all_units)?,
     }
 
     Ok(())
 }
 
-fn print_ls_text(all_units: &[(Unit, Vec<String>)]) {
+fn print_ls_text(all_units: &[Unit]) {
     if all_units.is_empty() {
-        println!("No symbols found. Run 'mdlr check --save' first.");
+        println!("No symbols found. Run 'mdlr check' first.");
         return;
     }
 
     println!(
-        "{:<40} {:<10} {:<30} {:>6}-{:<6} {}",
-        "ID", "Kind", "File", "Start", "End", "Tags"
+        "{:<40} {:<10} {:<30} {:>6}-{:<6}",
+        "ID", "Kind", "File", "Start", "End"
     );
-    println!("{}", "-".repeat(120));
-    for (unit, tags) in all_units {
+    println!("{}", "-".repeat(100));
+    for unit in all_units {
         let kind_str = format!("{:?}", unit.kind);
         let file_str = unit.file.display().to_string();
-        let tags_str =
-            if tags.is_empty() { String::new() } else { tags.join(", ") };
         println!(
-            "{:<40} {:<10} {:<30} {:>6}-{:<6} {}",
+            "{:<40} {:<10} {:<30} {:>6}-{:<6}",
             truncate(&unit.id, 40),
             kind_str,
             truncate(&file_str, 30),
             unit.span.start_line,
             unit.span.end_line,
-            tags_str
         );
     }
     println!();
     println!("Total: {} symbols", all_units.len());
 }
 
-fn print_ls_json(all_units: Vec<(Unit, Vec<String>)>) -> Result<()> {
+fn print_ls_json(all_units: &[Unit]) -> Result<()> {
     let output: Vec<_> = all_units
-        .into_iter()
-        .map(|(unit, tags)| {
+        .iter()
+        .map(|unit| {
             serde_json::json!({
                 "id": unit.id,
                 "kind": format!("{:?}", unit.kind),
@@ -95,7 +90,6 @@ fn print_ls_json(all_units: Vec<(Unit, Vec<String>)>) -> Result<()> {
                     "start_line": unit.span.start_line,
                     "end_line": unit.span.end_line,
                 },
-                "tags": tags,
             })
         })
         .collect();
@@ -125,7 +119,6 @@ fn find_unit(store: &CacheStore, symbol: &str) -> Result<Unit> {
 pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
     let store = CacheStore::open(Path::new("."))?;
     let unit = find_unit(&store, symbol)?;
-    let semantic_tags = store.tags().load_tags_with_staged()?;
 
     // Read the source file and extract the span
     let source_path = store.root().join(&unit.file);
@@ -135,8 +128,6 @@ pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
     let start_idx = unit.span.start_line.saturating_sub(1);
     let end_idx = unit.span.end_line.min(lines.len());
     let content: String = lines[start_idx..end_idx].join("\n");
-
-    let tags = semantic_tags.get_tags(&unit.id).to_vec();
 
     match format {
         OutputFormat::Text => {
@@ -148,9 +139,6 @@ pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
                 unit.span.start_line,
                 unit.span.end_line
             );
-            if !tags.is_empty() {
-                println!("Tags: {}", tags.join(", "));
-            }
             println!();
             println!("{}", content);
         }
@@ -163,7 +151,6 @@ pub fn handle_get(symbol: &str, format: OutputFormat) -> Result<()> {
                     "start_line": unit.span.start_line,
                     "end_line": unit.span.end_line,
                 },
-                "tags": tags,
                 "content": content,
             });
             println!("{}", serde_json::to_string_pretty(&output)?);

@@ -35,12 +35,6 @@ mdlr computes structural metrics that help you understand the modularity and cou
 | [Traits per Type](impl-metrics.md#traits-per-type) | How many traits each type implements |
 | [LCOM](impl-metrics.md#lcom-lack-of-cohesion-of-methods) | Lack of Cohesion of Methods - how related methods are |
 
-### Semantic Metrics
-
-| Metric | Description |
-|--------|-------------|
-| [Tag Coverage](tag-coverage.md) | Percentage of units with semantic tags |
-
 ## How Metrics Are Computed
 
 1. **Graph extraction**: Source files are parsed using the Rust compiler's HIR to identify code units (functions, structs, traits, etc.)

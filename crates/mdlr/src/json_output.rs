@@ -2,7 +2,7 @@
 
 use mdlr_metrics::{
     BucketedFanMetrics, BucketedValue, ComplexityMetrics, FileLocMetrics,
-    StructMetrics, TagMetrics,
+    StructMetrics,
 };
 
 /// Build JSON for a bucketed metric value
@@ -140,107 +140,5 @@ pub fn build_file_loc_json(file_loc: &FileLocMetrics) -> serde_json::Value {
         "p90": file_loc.p90,
         "total": file_loc.total,
         "distribution": distribution,
-    })
-}
-
-/// Build JSON for semantic tags metrics
-pub fn build_semantic_tags_json(
-    tag_metrics: &TagMetrics,
-) -> serde_json::Value {
-    let namespace_distribution: serde_json::Map<String, serde_json::Value> =
-        tag_metrics
-            .namespace_distribution
-            .iter()
-            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-            .collect();
-
-    let namespace_values: serde_json::Map<String, serde_json::Value> =
-        tag_metrics
-            .namespace_values
-            .iter()
-            .map(|(ns, values)| {
-                let values_map: serde_json::Map<String, serde_json::Value> =
-                    values
-                        .iter()
-                        .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-                        .collect();
-                (ns.clone(), serde_json::Value::Object(values_map))
-            })
-            .collect();
-
-    serde_json::json!({
-        "total_units": tag_metrics.total_units,
-        "tagged_units": tag_metrics.tagged_units,
-        "coverage": tag_metrics.tag_coverage,
-        "by_namespace": namespace_distribution,
-        "namespace_values": namespace_values,
-        "conceptual": build_conceptual_json(tag_metrics),
-    })
-}
-
-/// Build JSON array for concept scattering entries
-fn build_scattering_json(
-    scattering: &[mdlr_metrics::ConceptScatter],
-) -> Vec<serde_json::Value> {
-    scattering
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "tag": s.tag,
-                "unit_count": s.unit_count,
-                "file_count": s.file_count,
-                "scatter_ratio": s.scatter_ratio,
-            })
-        })
-        .collect()
-}
-
-/// Build JSON map for cross-concept edges grouped by namespace
-fn build_cross_concept_by_ns_json(
-    by_namespace: &std::collections::HashMap<
-        String,
-        Vec<(String, String, usize)>,
-    >,
-) -> serde_json::Map<String, serde_json::Value> {
-    by_namespace
-        .iter()
-        .map(|(ns, pairs)| {
-            let pairs_json: Vec<_> = pairs
-                .iter()
-                .map(|(from, to, count)| {
-                    serde_json::json!({"from": from, "to": to, "count": count})
-                })
-                .collect();
-            (ns.clone(), serde_json::json!(pairs_json))
-        })
-        .collect()
-}
-
-/// Build conceptual metrics JSON if present
-fn build_conceptual_json(
-    tag_metrics: &TagMetrics,
-) -> Option<serde_json::Value> {
-    tag_metrics.conceptual.as_ref().map(|c| {
-        let top: Vec<_> = c
-            .conceptual_fan_out
-            .top
-            .iter()
-            .map(|(id, count)| serde_json::json!({"id": id, "count": count}))
-            .collect();
-
-        serde_json::json!({
-            "conceptual_fan_out": {
-                "max": c.conceptual_fan_out.max,
-                "mean": c.conceptual_fan_out.mean,
-                "top": top,
-            },
-            "concept_scattering": build_scattering_json(&c.concept_scattering),
-            "cross_concept_edges": {
-                "total_tagged_edges": c.cross_concept_edges.total_tagged_edges,
-                "cross_concept_count": c.cross_concept_edges.cross_concept_count,
-                "cross_concept_ratio": c.cross_concept_edges.cross_concept_ratio,
-                "by_namespace": build_cross_concept_by_ns_json(&c.cross_concept_edges.by_namespace),
-            },
-        })
     })
 }

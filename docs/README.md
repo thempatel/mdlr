@@ -18,7 +18,6 @@ A modularity analyzer for code. Uses the Rust compiler's HIR (High-level Interme
 - [Complexity](metrics/complexity.md) - function size, parameters, cyclomatic complexity, max scope
 - [File LOC](metrics/file-loc.md) - lines of code per file
 - [Impl Metrics](metrics/impl-metrics.md) - methods per impl, traits per type, LCOM
-- [Tag Coverage](metrics/tag-coverage.md)
 - [Interpreting Results](metrics/interpreting-results.md)
 
 ### Reference

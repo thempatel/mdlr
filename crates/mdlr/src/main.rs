@@ -12,7 +12,6 @@ mod json_output;
 mod metrics_commands;
 mod metrics_rows;
 mod symbol_commands;
-mod tag_commands;
 mod timing;
 mod walk;
 
@@ -20,12 +19,12 @@ use cache::{CacheStore, FileCacheEntry};
 use cli::{Cli, Command, OutputFormat};
 use json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
-    build_file_loc_json, build_semantic_tags_json, build_struct_json,
+    build_file_loc_json, build_struct_json,
 };
 use mdlr_core::{Graph, Unit, build as build_graph};
 use mdlr_metrics::{
     BucketedMetrics, ComplexityMetrics, FileLocMetrics, StructMetrics,
-    StructuralMetrics, TagMetrics, Thresholds,
+    StructuralMetrics, Thresholds,
     compute_with_hub_thresholds as compute_structural,
 };
 use metrics_rows::{MetricsBundle, collect_metric_rows};
@@ -35,8 +34,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Check { target, save, k, pretty, format, timing } => {
-            handle_check(target.as_deref(), save, k, pretty, format, timing)
+        Command::Check { target, k, pretty, format, timing } => {
+            handle_check(target.as_deref(), k, pretty, format, timing)
         }
         Command::Metrics { command } => {
             metrics_commands::handle_metrics(command)
@@ -44,9 +43,6 @@ fn main() -> Result<()> {
         Command::Prompt => handle_prompt(),
         Command::Ls { path, kind, format } => handle_ls(&path, kind, format),
         Command::Get { symbol, format } => handle_get(&symbol, format),
-        Command::Tag { symbol, add, remove, clear, list, format } => {
-            tag_commands::handle_tag(symbol, add, remove, clear, list, format)
-        }
         Command::Ignore { metric, symbol, remove, list } => {
             ignore_commands::handle_ignore(metric, symbol, remove, list)
         }
@@ -77,8 +73,6 @@ struct ComputedMetrics {
     complexity: ComplexityMetrics,
     struct_metrics: StructMetrics,
     file_loc: FileLocMetrics,
-    tag_metrics: TagMetrics,
-    has_staged: bool,
 }
 
 /// Context for the check command, bundling common resources
@@ -238,7 +232,6 @@ fn passes_path_filter(file_path: &Path, filter: &CheckFilter) -> bool {
 #[tracing::instrument(name = "compute_metrics", skip_all)]
 fn compute_all_metrics(
     units: Vec<Unit>,
-    store: &CacheStore,
     config: &config::Config,
 ) -> ComputedMetrics {
     let graph =
@@ -251,24 +244,8 @@ fn compute_all_metrics(
     let complexity = ComplexityMetrics::compute(&graph);
     let struct_metrics = StructMetrics::compute(&graph);
     let file_loc = FileLocMetrics::compute(&graph);
-    let tags_store = store.tags();
-    let semantic_tags = tags_store.load_tags_with_staged().unwrap_or_default();
-    let has_staged = tags_store.has_staged_tags();
 
-    // Convert cache SemanticTags to metrics SemanticTags
-    let metrics_tags =
-        mdlr_metrics::SemanticTags { tags: semantic_tags.tags.clone() };
-    let tag_metrics = TagMetrics::compute(&graph, &metrics_tags);
-
-    ComputedMetrics {
-        graph,
-        structural,
-        complexity,
-        struct_metrics,
-        file_loc,
-        tag_metrics,
-        has_staged,
-    }
+    ComputedMetrics { graph, structural, complexity, struct_metrics, file_loc }
 }
 
 /// Extract symbol filter string from CheckFilter
@@ -293,7 +270,6 @@ fn format_text_output(
         complexity: &computed.complexity,
         struct_metrics: &computed.struct_metrics,
         file_loc: &computed.file_loc,
-        tag_metrics: &computed.tag_metrics,
     };
     let symbol_filter = get_symbol_filter(filter);
     let ignores = store.ignores().load_ignores().unwrap_or_default();
@@ -322,10 +298,6 @@ fn format_text_output(
             "warning: {} unit(s) have partial extraction (compilation errors prevented full analysis)",
             partial_count
         );
-    }
-
-    if computed.has_staged {
-        eprintln!("(staged tag changes pending - use --save to commit)");
     }
 
     Ok(())
@@ -368,7 +340,6 @@ fn format_json_output(
             "complexity": build_complexity_json(&computed.complexity),
             "struct": build_struct_json(&computed.struct_metrics),
             "file_loc": build_file_loc_json(&computed.file_loc),
-            "semantic_tags": build_semantic_tags_json(&computed.tag_metrics),
         }
     });
     println!("{}", serde_json::to_string_pretty(&output)?);
@@ -494,7 +465,6 @@ fn load_filtered_units(
 fn extract_and_analyze(
     ctx: &CheckContext,
     filter: &CheckFilter,
-    save: bool,
 ) -> Result<(ComputedMetrics, usize)> {
     extract_rust(&ctx.store)?;
     let (entries, units) = load_filtered_units(&ctx.store, filter)?;
@@ -508,18 +478,13 @@ fn extract_and_analyze(
         }
     }
 
-    if save {
-        ctx.store.tags().commit_staged_tags()?;
-    }
-
     let entry_count = entries.len();
-    let computed = compute_all_metrics(units, &ctx.store, &ctx.config);
+    let computed = compute_all_metrics(units, &ctx.config);
     Ok((computed, entry_count))
 }
 
 fn handle_check(
     target: Option<&str>,
-    save: bool,
     k: i32,
     pretty: bool,
     format: OutputFormat,
@@ -529,7 +494,7 @@ fn handle_check(
     let ctx = CheckContext::new()?;
     let filter = parse_check_filter(target, &ctx.cwd);
 
-    let (computed, entry_count) = extract_and_analyze(&ctx, &filter, save)?;
+    let (computed, entry_count) = extract_and_analyze(&ctx, &filter)?;
 
     let result = match format {
         OutputFormat::Text => format_text_output(

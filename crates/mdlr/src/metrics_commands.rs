@@ -47,22 +47,6 @@ fn get_metric_descriptions() -> Vec<(&'static str, &'static str)> {
             "file_loc",
             "Lines of code per file. High values indicate large files that may be hard to navigate and maintain.",
         ),
-        (
-            "tag_coverage",
-            "Percentage of units with semantic tags applied. Low values indicate incomplete conceptual mapping of the codebase.",
-        ),
-        (
-            "conceptual_fan_out",
-            "Number of distinct semantic concepts a unit participates in. High values indicate mixed responsibilities across domains.",
-        ),
-        (
-            "concept_scattering",
-            "How spread out a concept is across files. High values indicate poor cohesion; the concept should be consolidated.",
-        ),
-        (
-            "cross_concept_ratio",
-            "Percentage of edges crossing concept boundaries. High values indicate tight coupling between different domains.",
-        ),
     ]
 }
 

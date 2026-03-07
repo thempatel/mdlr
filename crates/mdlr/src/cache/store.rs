@@ -1,5 +1,4 @@
 use super::ignores_store::IgnoresStore;
-use super::tags_store::TagsStore;
 use super::types::FileCacheEntry;
 use anyhow::{Context, Result};
 use std::fs;
@@ -8,8 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const CACHE_DIR_NAME: &str = ".mdlr";
 const CACHE_SUBDIR: &str = "cache";
-const TAGS_FILE: &str = "tags.json";
-const STAGED_TAGS_FILE: &str = "tags.staged.json";
 
 /// Store for managing the .mdlr cache directory.
 pub struct CacheStore {
@@ -49,7 +46,7 @@ impl CacheStore {
             match current.parent() {
                 Some(parent) => current = parent,
                 None => anyhow::bail!(
-                    "No .mdlr directory found. Run 'mdlr check --save' to initialize."
+                    "No .mdlr directory found. Run 'mdlr check' to initialize."
                 ),
             }
         }
@@ -130,14 +127,6 @@ impl CacheStore {
             format!("Failed to write cache entry: {:?}", cache_path)
         })?;
         Ok(())
-    }
-
-    /// Get a TagsStore for managing semantic tags.
-    pub fn tags(&self) -> TagsStore {
-        TagsStore::new(
-            self.mdlr_dir.join(TAGS_FILE),
-            self.mdlr_dir.join(STAGED_TAGS_FILE),
-        )
     }
 
     /// Get an IgnoresStore for managing metric ignores.

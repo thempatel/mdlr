@@ -16,9 +16,7 @@ mdlr uses a local `.mdlr/` directory to cache extraction results for use by `ls`
 
 ### Extraction
 
-`mdlr check` always extracts all files from the workspace using `mdlr-extract-rust`. There is no incremental/change-detection step — every `check` invocation processes the full codebase.
-
-When `--save` is passed, the extracted results are written to the cache so that `ls` and `get` commands can read them without re-extracting.
+`mdlr check` always extracts all files from the workspace using `mdlr-extract-rust`. There is no incremental/change-detection step — every `check` invocation processes the full codebase and writes results to the cache.
 
 ### Per-File Cache Entry
 
@@ -37,11 +35,8 @@ Example: `src/main.rs` → `.mdlr/cache/src/main.json`
 ### Run Analysis
 
 ```bash
-# Analyze all files (does not write cache)
+# Analyze all files and save results to cache
 mdlr check
-
-# Analyze and save results to cache for ls/get
-mdlr check --save
 ```
 
 ## Gitignore Integration

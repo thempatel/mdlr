@@ -4,7 +4,7 @@ use crate::cache::Ignores;
 use crate::config::{Bucket, Config, MetricThresholds};
 use mdlr_metrics::{
     ComplexityMetrics, FileLocMetrics, HubInfo, StructMetrics,
-    StructuralMetrics, TagMetrics,
+    StructuralMetrics,
 };
 use std::collections::HashMap;
 
@@ -43,7 +43,6 @@ pub struct MetricsBundle<'a> {
     pub complexity: &'a ComplexityMetrics,
     pub struct_metrics: &'a StructMetrics,
     pub file_loc: &'a FileLocMetrics,
-    pub tag_metrics: &'a TagMetrics,
 }
 
 /// Specification for collecting an integer metric
@@ -349,49 +348,5 @@ pub fn collect_metric_rows(
     scored_rows
         .retain(|row| !ignores.is_ignored(&row.symbol, &row.metric_name));
 
-    let mut rows = sort_and_group(scored_rows, k);
-    collect_conceptual_metrics(&mut rows, metrics, k);
-    rows
-}
-
-/// Collect conceptual metrics from tag metrics.
-fn collect_conceptual_metrics(
-    rows: &mut Vec<MetricRow>,
-    m: &MetricsBundle,
-    k: i32,
-) {
-    let Some(ref conceptual) = m.tag_metrics.conceptual else {
-        return;
-    };
-
-    let limit_fan_out = if k < 0 {
-        conceptual.conceptual_fan_out.top.len()
-    } else {
-        k as usize
-    };
-    for (name, count) in
-        conceptual.conceptual_fan_out.top.iter().take(limit_fan_out)
-    {
-        if *count > 1 {
-            rows.push((
-                "conceptual_fan_out".to_string(),
-                name.clone(),
-                count.to_string(),
-                "-".to_string(),
-            ));
-        }
-    }
-
-    let limit_scatter =
-        if k < 0 { conceptual.concept_scattering.len() } else { k as usize };
-    for scatter in conceptual.concept_scattering.iter().take(limit_scatter) {
-        if scatter.file_count > 1 {
-            rows.push((
-                "concept_scattering".to_string(),
-                scatter.tag.clone(),
-                format!("{:.2}", scatter.scatter_ratio),
-                "-".to_string(),
-            ));
-        }
-    }
+    sort_and_group(scored_rows, k)
 }
