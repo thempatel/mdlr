@@ -2,6 +2,8 @@
 
 Use mdlr to identify and improve modularity issues in the codebase.
 
+**IMPORTANT**: Never use cargo run. Always use `task link` to build `mdlr` and then use `mdlr` directly as a binary.
+
 ## mdlr Reference
 
 ### Quick Start
@@ -43,14 +45,15 @@ mdlr metrics get cyclomatic
 
 ## Steps
 
-1. Run `mdlr check` to identify modularity issues
-2. Focus on high-value opportunities (top of each metric)
-3. Drill down with `mdlr check <symbol>` to get metrics for a specific unit
-4. Create a plan and consider alternatives before making changes
-5. Follow the plan to make the suggested improvements to the codebase
-6. Ensure all existing tests continue to pass by running `cargo test`
-7. Update or add tests as needed to cover your changes
-8. If you add a new metric, CLI command, or language support, update the relevant documentation as specified in CLAUDE.md
+1. Run all unit tests.
+2. Run `mdlr check` to identify modularity issues
+3. Focus on high-value opportunities (top of each metric)
+4. Drill down with `mdlr check <symbol>` to get metrics for a specific unit
+5. Create a plan and consider alternatives before making changes
+6. Follow the plan to make the suggested improvements to the codebase
+7. Ensure all existing tests continue to pass by running `cargo test`
+8. Update or add tests as needed to cover your changes
+9. If you add a new metric, CLI command, or language support, update the relevant documentation as specified in CLAUDE.md
 
 ## Important: Choose the Best Fix
 
@@ -67,13 +70,3 @@ For example, a large function might be fixed by:
 4. Introducing a data structure that eliminates branching
 
 Pick the approach that results in the cleanest, most maintainable code—not just the one that lowers the metric fastest.
-
-## False Positives
-
-As a **last resort**, if a metric flag is genuinely a false positive that cannot be improved through any refactoring, you can suppress it:
-
-```bash
-mdlr ignore <metric> "<symbol>"
-```
-
-Only use this after exhausting other options. Most high metrics indicate real opportunities for improvement.
