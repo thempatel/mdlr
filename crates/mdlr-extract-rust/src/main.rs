@@ -70,6 +70,46 @@ fn run() -> Result<()> {
     run_standalone_mode(&cli)
 }
 
+/// Creates a cargo GlobalContext configured for mdlr extraction.
+fn create_cargo_context() -> Result<cargo::GlobalContext> {
+    let gctx = cargo::GlobalContext::default()
+        .context("Failed to create cargo GlobalContext")?;
+
+    // Default shell is Verbose (shows "Running rustc..." for every unit).
+    // Set to Normal to show only "Compiling"/"Checking"/"Finished" + progress bars.
+    gctx.shell().set_verbosity(cargo::core::shell::Verbosity::Normal);
+
+    Ok(gctx)
+}
+
+/// Opens a cargo Workspace with a separate .mdlr/target dir.
+fn open_workspace<'gctx>(
+    manifest_path: &std::path::Path,
+    gctx: &'gctx cargo::GlobalContext,
+) -> Result<cargo::core::Workspace<'gctx>> {
+    let mut ws = cargo::core::Workspace::new(manifest_path, gctx)
+        .context("Failed to create cargo Workspace")?;
+
+    // Use a separate target directory (.mdlr/target) so that mdlr's check-mode
+    // builds don't invalidate the user's normal build cache in target/.
+    let mdlr_target_dir = ws.root().join(".mdlr").join("target");
+    ws.set_target_dir(cargo::util::Filesystem::new(mdlr_target_dir));
+
+    Ok(ws)
+}
+
+/// Resolves which packages to extract: CLI-specified or all workspace members.
+fn resolve_target_packages(
+    cli: &Cli,
+    ws: &cargo::core::Workspace<'_>,
+) -> HashSet<String> {
+    if !cli.package.is_empty() {
+        cli.package.iter().cloned().collect()
+    } else {
+        ws.members().map(|p| p.name().to_string()).collect()
+    }
+}
+
 /// Uses cargo-as-library to orchestrate compilation.
 fn run_standalone_mode(cli: &Cli) -> Result<()> {
     let manifest_path =
@@ -91,30 +131,9 @@ fn run_standalone_mode(cli: &Cli) -> Result<()> {
     // SAFETY: called before spawning any threads (cargo hasn't started yet)
     unsafe { std::env::set_var("RUSTC", &rustc_path) };
 
-    // Set up cargo's GlobalContext
-    let gctx = cargo::GlobalContext::default()
-        .context("Failed to create cargo GlobalContext")?;
-
-    // Default shell is Verbose (shows "Running rustc..." for every unit).
-    // Set to Normal to show only "Compiling"/"Checking"/"Finished" + progress bars.
-    gctx.shell().set_verbosity(cargo::core::shell::Verbosity::Normal);
-
-    // Create workspace
-    let mut ws = cargo::core::Workspace::new(&manifest_path, &gctx)
-        .context("Failed to create cargo Workspace")?;
-
-    // Use a separate target directory (.mdlr/target) so that mdlr's check-mode
-    // builds don't invalidate the user's normal build cache in target/.
-    let mdlr_target_dir = ws.root().join(".mdlr").join("target");
-    ws.set_target_dir(cargo::util::Filesystem::new(mdlr_target_dir));
-
-    // Determine which packages to compile and extract from.
-    let target_packages: HashSet<String> = if !cli.package.is_empty() {
-        cli.package.iter().cloned().collect()
-    } else {
-        // Extract from all workspace members
-        ws.members().map(|p| p.name().to_string()).collect()
-    };
+    let gctx = create_cargo_context()?;
+    let ws = open_workspace(&manifest_path, &gctx)?;
+    let target_packages = resolve_target_packages(cli, &ws);
 
     // Set up compile options for check mode
     let mut compile_opts = cargo::ops::CompileOptions::new(
