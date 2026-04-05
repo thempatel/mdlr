@@ -235,11 +235,26 @@ fn find_extract_py_binary() -> Option<PathBuf> {
     None
 }
 
-/// Detect whether the project has Python project files.
+/// Detect whether the project has Python files.
 fn has_python_project(root: &Path) -> bool {
-    root.join("pyproject.toml").exists()
+    // Quick check: standard Python project markers
+    if root.join("pyproject.toml").exists()
         || root.join("setup.py").exists()
         || root.join("setup.cfg").exists()
+    {
+        return true;
+    }
+    // Fallback: look for .py/.pyi files (shallow check for standalone scripts)
+    let walker =
+        ignore::WalkBuilder::new(root).hidden(true).max_depth(Some(3)).build();
+    for entry in walker.flatten() {
+        if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+            if matches!(ext, "py" | "pyi") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Shell out to `mdlr-extract-py` to extract units from Python files.

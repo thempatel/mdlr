@@ -155,6 +155,23 @@ fn detect_base_branch(root: &Path) -> Result<String> {
     bail!("Could not detect base branch: neither 'main' nor 'master' exists")
 }
 
+/// Get staged and unstaged changes relative to HEAD.
+/// Used when on main/master to check only the current working-tree modifications.
+fn diff_files_head(root: &Path) -> Result<HashSet<PathBuf>> {
+    let staged = git_diff_name_only(root, &["--cached"])?;
+    let unstaged = git_diff_name_only(root, &[])?;
+
+    let mut changed = HashSet::new();
+    for rel in staged.iter().chain(unstaged.iter()) {
+        let abs = root.join(rel);
+        if let Ok(canonical) = abs.canonicalize() {
+            changed.insert(canonical);
+        }
+    }
+
+    Ok(changed)
+}
+
 /// Get the set of files changed on the current branch relative to its base.
 /// Includes committed, staged, and unstaged changes (but not untracked files).
 fn diff_files(root: &Path) -> Result<HashSet<PathBuf>> {
@@ -523,8 +540,9 @@ pub fn handle_check(
         // Explicit target or --all flag: skip diff mode
         parse_check_filter(target, &ctx.cwd)
     } else if is_on_base_branch(ctx.store.root()) {
-        // On main/master: analyze everything
-        CheckFilter::None
+        // On main/master: only check staged + unstaged changes against HEAD
+        let changed = diff_files_head(ctx.store.root())?;
+        CheckFilter::Diff(changed)
     } else {
         // On a branch: diff mode by default
         let changed = diff_files(ctx.store.root())?;
