@@ -1,108 +1,81 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use std::env;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use crate::cache::{CacheStore, FileCacheEntry};
 
-/// Find the `mdlr-extract-rust` binary, checking next to our own binary first.
-fn find_extract_rust_binary() -> Result<PathBuf> {
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            let sibling = dir.join("mdlr-extract-rust");
-            if sibling.exists() {
-                return Ok(sibling);
-            }
+// SAFETY justification for `unsafe { env::set_var(...) }` below: the rust
+// extractor's `MDLR_QUIET_DIAGNOSTICS` is read at extractor entry, before any
+// background thread the rust-analyzer libs spawn could observe a partial
+// value. We only set it; we never unset it concurrently.
+
+/// Run an in-process extractor and convert errors/panics into a warning.
+///
+/// Mirrors the prior shell-out behavior, where a non-zero exit status was
+/// downgraded to "Warning: <lang> extraction had errors". Wrapping in
+/// `catch_unwind` keeps a panic in any single extractor (rust-analyzer in
+/// particular) from terminating the whole `mdlr` invocation.
+fn run_extractor<F>(language: &str, f: F)
+where
+    F: FnOnce() -> Result<()>,
+{
+    let result = std::panic::catch_unwind(AssertUnwindSafe(f));
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            eprintln!(
+                "Warning: {language} extraction had errors (results may be partial): {e:#}"
+            );
+        }
+        Err(_) => {
+            eprintln!(
+                "Warning: {language} extraction panicked (results may be partial)"
+            );
         }
     }
-    // Check if it's on PATH
-    if let Ok(output) =
-        std::process::Command::new("which").arg("mdlr-extract-rust").output()
-    {
-        if output.status.success() {
-            let path =
-                String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Ok(PathBuf::from(path));
-            }
-        }
-    }
-    bail!(
-        "Could not find mdlr-extract-rust binary. \
-         Build it with: cargo install --path tools/mdlr-extract-rust"
-    );
 }
 
-/// Shell out to `mdlr-extract-rust` to extract units from all workspace members.
+/// Run the in-process Rust extractor against the workspace at `store.root()`.
 ///
 /// Only runs if a `Cargo.toml` exists at the workspace root.
 #[tracing::instrument(name = "extract", skip_all)]
 pub fn extract_rust(store: &CacheStore, generation_id: u64) -> Result<()> {
     let workspace_root = store.root();
 
-    // Skip if no Cargo workspace
     let manifest_path = workspace_root.join("Cargo.toml");
     if !manifest_path.exists() {
         return Ok(());
     }
 
-    let extract_bin = find_extract_rust_binary()?;
-
-    let status = std::process::Command::new(&extract_bin)
-        .arg("--manifest-path")
-        .arg(&manifest_path)
-        .arg("--output")
-        .arg(store.cache_dir())
-        .arg("--generation-id")
-        .arg(generation_id.to_string())
-        .env("MDLR_QUIET_DIAGNOSTICS", "1")
-        .current_dir(workspace_root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .context("Failed to run mdlr-extract-rust")?;
-
-    if !status.success() {
-        eprintln!(
-            "Warning: HIR extraction had errors (results may be partial)"
-        );
+    // The rust extractor's diagnostics path is gated on this env var; preserve
+    // the prior behavior where the orchestrator always set it before invoking.
+    unsafe {
+        env::set_var("MDLR_QUIET_DIAGNOSTICS", "1");
     }
+
+    let cache_dir = store.cache_dir().to_path_buf();
+    let workspace_root = workspace_root.to_path_buf();
+    run_extractor("Rust", || {
+        mdlr_extract_rust::extract(
+            &manifest_path,
+            &cache_dir,
+            Some(generation_id),
+            &[],
+            &workspace_root,
+        )
+    });
 
     Ok(())
 }
 
-/// Find the `mdlr-extract-ts` binary, checking next to our own binary first.
-fn find_extract_ts_binary() -> Option<PathBuf> {
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            let sibling = dir.join("mdlr-extract-ts");
-            if sibling.exists() {
-                return Some(sibling);
-            }
-        }
-    }
-    if let Ok(output) =
-        std::process::Command::new("which").arg("mdlr-extract-ts").output()
-    {
-        if output.status.success() {
-            let path =
-                String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
-        }
-    }
-    None
-}
-
 /// Detect whether the project has TypeScript/JavaScript files.
 fn has_ts_files(root: &Path) -> bool {
-    // Quick check: tsconfig.json or package.json
     if root.join("tsconfig.json").exists()
         || root.join("package.json").exists()
     {
         return true;
     }
-    // Fallback: look for .ts/.tsx/.js/.jsx files (shallow check)
     let walker =
         ignore::WalkBuilder::new(root).hidden(true).max_depth(Some(3)).build();
     for entry in walker.flatten() {
@@ -115,37 +88,23 @@ fn has_ts_files(root: &Path) -> bool {
     false
 }
 
-/// Shell out to `mdlr-extract-ts` to extract units from TS/JS files.
+/// Run the in-process TS/JS extractor against the workspace at `store.root()`.
 #[tracing::instrument(name = "extract_ts", skip_all)]
 pub fn extract_ts(store: &CacheStore, generation_id: u64) -> Result<()> {
-    let extract_bin = match find_extract_ts_binary() {
-        Some(bin) => bin,
-        None => return Ok(()), // silently skip if not available
-    };
-
     let workspace_root = store.root();
     if !has_ts_files(workspace_root) {
         return Ok(());
     }
 
-    let status = std::process::Command::new(&extract_bin)
-        .arg("--root")
-        .arg(workspace_root)
-        .arg("--output")
-        .arg(store.cache_dir())
-        .arg("--generation-id")
-        .arg(generation_id.to_string())
-        .current_dir(workspace_root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .context("Failed to run mdlr-extract-ts")?;
-
-    if !status.success() {
-        eprintln!(
-            "Warning: TS extraction had errors (results may be partial)"
-        );
-    }
+    let cache_dir = store.cache_dir().to_path_buf();
+    let workspace_root = workspace_root.to_path_buf();
+    run_extractor("TS", || {
+        mdlr_extract_ts::extract(
+            &workspace_root,
+            &cache_dir,
+            Some(generation_id),
+        )
+    });
 
     Ok(())
 }
@@ -211,40 +170,14 @@ pub fn extract_go(store: &CacheStore, generation_id: u64) -> Result<()> {
     Ok(())
 }
 
-/// Find the `mdlr-extract-py` binary, checking next to our own binary first.
-fn find_extract_py_binary() -> Option<PathBuf> {
-    if let Ok(current_exe) = env::current_exe() {
-        if let Some(dir) = current_exe.parent() {
-            let sibling = dir.join("mdlr-extract-py");
-            if sibling.exists() {
-                return Some(sibling);
-            }
-        }
-    }
-    if let Ok(output) =
-        std::process::Command::new("which").arg("mdlr-extract-py").output()
-    {
-        if output.status.success() {
-            let path =
-                String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !path.is_empty() {
-                return Some(PathBuf::from(path));
-            }
-        }
-    }
-    None
-}
-
 /// Detect whether the project has Python files.
 fn has_python_project(root: &Path) -> bool {
-    // Quick check: standard Python project markers
     if root.join("pyproject.toml").exists()
         || root.join("setup.py").exists()
         || root.join("setup.cfg").exists()
     {
         return true;
     }
-    // Fallback: look for .py/.pyi files (shallow check for standalone scripts)
     let walker =
         ignore::WalkBuilder::new(root).hidden(true).max_depth(Some(3)).build();
     for entry in walker.flatten() {
@@ -257,39 +190,23 @@ fn has_python_project(root: &Path) -> bool {
     false
 }
 
-/// Shell out to `mdlr-extract-py` to extract units from Python files.
-///
-/// Only runs if a Python project marker exists at the workspace root.
+/// Run the in-process Python extractor against the workspace at `store.root()`.
 #[tracing::instrument(name = "extract_py", skip_all)]
 pub fn extract_py(store: &CacheStore, generation_id: u64) -> Result<()> {
-    let extract_bin = match find_extract_py_binary() {
-        Some(bin) => bin,
-        None => return Ok(()), // silently skip if not available
-    };
-
     let workspace_root = store.root();
     if !has_python_project(workspace_root) {
         return Ok(());
     }
 
-    let status = std::process::Command::new(&extract_bin)
-        .arg("--root")
-        .arg(workspace_root)
-        .arg("--output")
-        .arg(store.cache_dir())
-        .arg("--generation-id")
-        .arg(generation_id.to_string())
-        .current_dir(workspace_root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .context("Failed to run mdlr-extract-py")?;
-
-    if !status.success() {
-        eprintln!(
-            "Warning: Python extraction had errors (results may be partial)"
-        );
-    }
+    let cache_dir = store.cache_dir().to_path_buf();
+    let workspace_root = workspace_root.to_path_buf();
+    run_extractor("Python", || {
+        mdlr_extract_py::extract(
+            &workspace_root,
+            &cache_dir,
+            Some(generation_id),
+        )
+    });
 
     Ok(())
 }

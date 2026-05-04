@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Deserialize)]
 struct FileCacheEntry {
@@ -35,21 +34,11 @@ fn extract_file(rel_path: &str, source: &str) -> HashMap<String, Unit> {
     std::fs::create_dir_all(file_path.parent().unwrap()).expect("mkdir");
     std::fs::write(&file_path, source).expect("write source");
 
-    let extractor = find_extractor();
     let output_dir = root.join("output");
     std::fs::create_dir_all(&output_dir).expect("mkdir output");
 
-    let status = Command::new(&extractor)
-        .arg("--root")
-        .arg(root)
-        .arg("--output")
-        .arg(&output_dir)
-        .arg("--generation-id")
-        .arg("1")
-        .status()
+    mdlr_extract_ts::extract(root, &output_dir, Some(1))
         .expect("run extractor");
-
-    assert!(status.success(), "extractor exited with {status}");
 
     let json_files = find_json_files(&output_dir);
     assert!(
@@ -70,20 +59,6 @@ fn extract_file(rel_path: &str, source: &str) -> HashMap<String, Unit> {
     }
 
     units
-}
-
-fn find_extractor() -> PathBuf {
-    let test_exe = std::env::current_exe().expect("current_exe");
-    let dir = test_exe.parent().unwrap().parent().unwrap();
-    let candidate = dir.join("mdlr-extract-ts");
-    if candidate.exists() {
-        return candidate;
-    }
-    panic!(
-        "Could not find mdlr-extract-ts binary at {}. \
-         Run `cargo build --bin mdlr-extract-ts` first.",
-        candidate.display()
-    );
 }
 
 fn find_files_by_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
@@ -730,21 +705,11 @@ fn extract_files_with_tokens(
         std::fs::write(&file_path, source).expect("write source");
     }
 
-    let extractor = find_extractor();
     let output_dir = root.join("output");
     std::fs::create_dir_all(&output_dir).expect("mkdir output");
 
-    let status = Command::new(&extractor)
-        .arg("--root")
-        .arg(&root)
-        .arg("--output")
-        .arg(&output_dir)
-        .arg("--generation-id")
-        .arg("1")
-        .status()
+    mdlr_extract_ts::extract(&root, &output_dir, Some(1))
         .expect("run extractor");
-
-    assert!(status.success(), "extractor exited with {status}");
 
     let token_files = find_token_files(&output_dir);
     std::mem::forget(tmp);

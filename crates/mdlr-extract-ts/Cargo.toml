@@ -1,11 +1,7 @@
 [package]
 name = "mdlr-extract-ts"
-version = "0.1.0"
-edition = "2024"
-
-[[bin]]
-name = "mdlr-extract-ts"
-path = "src/main.rs"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
 mdlr-core = { workspace = true }
@@ -13,13 +9,12 @@ mdlr-cpd = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-clap = { workspace = true }
 ignore = { workspace = true }
-rayon = "1"
-swc_common = { version = "19", features = ["sourcemap"] }
-swc_ecma_ast = "21"
-swc_ecma_parser = "35"
-swc_ecma_visit = "21"
+rayon = { workspace = true }
+swc_common = { workspace = true }
+swc_ecma_ast = { workspace = true }
+swc_ecma_parser = { workspace = true }
+swc_ecma_visit = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

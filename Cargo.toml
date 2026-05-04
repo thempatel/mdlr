@@ -4,10 +4,10 @@ members = [
     "crates/mdlr-core",
     "crates/mdlr-cpd",
     "crates/mdlr-metrics",
+    "crates/mdlr-extract-rust",
+    "crates/mdlr-extract-ts",
+    "crates/mdlr-extract-py",
     "crates/mdlr",
-    "tools/mdlr-extract-rust",
-    "tools/mdlr-extract-ts",
-    "tools/mdlr-extract-py",
 ]
 exclude = [
     "test-repos",
@@ -22,6 +22,9 @@ edition = "2024"
 mdlr-core = { path = "crates/mdlr-core" }
 mdlr-cpd = { path = "crates/mdlr-cpd" }
 mdlr-metrics = { path = "crates/mdlr-metrics" }
+mdlr-extract-rust = { path = "crates/mdlr-extract-rust" }
+mdlr-extract-ts = { path = "crates/mdlr-extract-ts" }
+mdlr-extract-py = { path = "crates/mdlr-extract-py" }
 
 # External dependencies
 serde = { version = "1", features = ["derive"] }
@@ -37,3 +40,23 @@ tabwriter = "1.4.1"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
+rayon = "1"
+
+# Rust extractor (rust-analyzer published API, pinned to 0.0.307)
+ra_ap_hir = "=0.0.307"
+ra_ap_syntax = "=0.0.307"
+ra_ap_load-cargo = "=0.0.307"
+ra_ap_ide_db = "=0.0.307"
+ra_ap_vfs = "=0.0.307"
+ra_ap_project_model = "=0.0.307"
+
+# TS extractor (swc)
+swc_common = { version = "19", features = ["sourcemap"] }
+swc_ecma_ast = "21"
+swc_ecma_parser = "35"
+swc_ecma_visit = "21"
+
+# Python extractor (ruff, pinned to a known-good revision)
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff", rev = "34998be22ec3a77d398bbd55234ef8740f768329" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff", rev = "34998be22ec3a77d398bbd55234ef8740f768329" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff", rev = "34998be22ec3a77d398bbd55234ef8740f768329" }

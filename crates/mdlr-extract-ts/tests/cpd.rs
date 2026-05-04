@@ -7,23 +7,10 @@
 //! The source code is written so a human reader can verify by eye whether
 //! two blocks should or should not be detected as duplicates.
 
-// The tokenizer is pub(crate) in the binary crate, so these tests shell
-// out to the extractor binary — the same path production uses.
+// The tokenizer is pub(crate), so these tests drive the public `extract`
+// entry point of the library — the same path production uses.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-
-fn find_extractor() -> PathBuf {
-    let test_exe = std::env::current_exe().expect("current_exe");
-    let dir = test_exe.parent().unwrap().parent().unwrap();
-    let candidate = dir.join("mdlr-extract-ts");
-    assert!(
-        candidate.exists(),
-        "mdlr-extract-ts not found at {}. Run `cargo build` first.",
-        candidate.display()
-    );
-    candidate
-}
+use std::path::Path;
 
 /// Write source files to a temp dir, run the extractor, load `.tokens` files,
 /// and return the deserialized token streams.
@@ -40,16 +27,7 @@ fn tokenize_files(files: &[(&str, &str)]) -> Vec<mdlr_cpd::FileTokens> {
     let output = root.join(".mdlr-cache");
     std::fs::create_dir_all(&output).unwrap();
 
-    let status = Command::new(find_extractor())
-        .arg("--root")
-        .arg(root)
-        .arg("--output")
-        .arg(&output)
-        .arg("--generation-id")
-        .arg("1")
-        .status()
-        .expect("run extractor");
-    assert!(status.success());
+    mdlr_extract_ts::extract(root, &output, Some(1)).expect("run extractor");
 
     let mut tokens = Vec::new();
     load_tokens_recursive(&output, &mut tokens);

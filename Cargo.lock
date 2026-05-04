@@ -1147,6 +1147,9 @@ dependencies = [
  "ignore",
  "mdlr-core",
  "mdlr-cpd",
+ "mdlr-extract-py",
+ "mdlr-extract-rust",
+ "mdlr-extract-ts",
  "mdlr-metrics",
  "serde",
  "serde_json",
@@ -1182,7 +1185,6 @@ name = "mdlr-extract-py"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "ignore",
  "mdlr-core",
  "mdlr-cpd",
@@ -1200,7 +1202,6 @@ name = "mdlr-extract-rust"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "mdlr-core",
  "mdlr-cpd",
  "ra_ap_hir",
@@ -1219,7 +1220,6 @@ name = "mdlr-extract-ts"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "ignore",
  "mdlr-core",
  "mdlr-cpd",

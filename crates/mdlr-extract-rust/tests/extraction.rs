@@ -1,7 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Deserialize)]
 struct FileCacheEntry {
@@ -27,7 +26,6 @@ fn extract(lib_rs: &str) -> HashMap<String, Unit> {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let root = tmp.path();
 
-    // Create Cargo.toml
     std::fs::write(
         root.join("Cargo.toml"),
         r#"[package]
@@ -41,31 +39,21 @@ path = "src/lib.rs"
     )
     .expect("write Cargo.toml");
 
-    // Create src/lib.rs
     std::fs::create_dir_all(root.join("src")).expect("mkdir src");
     std::fs::write(root.join("src/lib.rs"), lib_rs).expect("write lib.rs");
 
-    // Find the extractor binary
-    let extractor = find_extractor();
-
-    // Create output dir
     let output_dir = root.join("output");
     std::fs::create_dir_all(&output_dir).expect("mkdir output");
 
-    // Run extraction (must run from the project root so cargo can find src/)
-    let status = Command::new(&extractor)
-        .current_dir(root)
-        .arg("--manifest-path")
-        .arg(root.join("Cargo.toml"))
-        .arg("--output")
-        .arg(&output_dir)
-        .env("MDLR_QUIET_DIAGNOSTICS", "1")
-        .status()
-        .expect("run extractor");
+    mdlr_extract_rust::extract(
+        &root.join("Cargo.toml"),
+        &output_dir,
+        None,
+        &[],
+        root,
+    )
+    .expect("run extractor");
 
-    assert!(status.success(), "extractor exited with {status}");
-
-    // Find and parse the output JSON
     let json_files: Vec<PathBuf> = find_json_files(&output_dir);
     assert!(
         !json_files.is_empty(),
@@ -85,21 +73,6 @@ path = "src/lib.rs"
     }
 
     units
-}
-
-fn find_extractor() -> PathBuf {
-    // Look next to the test binary
-    let test_exe = std::env::current_exe().expect("current_exe");
-    let dir = test_exe.parent().unwrap().parent().unwrap();
-    let candidate = dir.join("mdlr-extract-rust");
-    if candidate.exists() {
-        return candidate;
-    }
-    panic!(
-        "Could not find mdlr-extract-rust binary at {}. \
-         Run `cargo build --bin mdlr-extract-rust` first.",
-        candidate.display()
-    );
 }
 
 fn find_files_by_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
@@ -655,23 +628,18 @@ path = "src/lib.rs"
     std::fs::create_dir_all(root.join("src")).expect("mkdir src");
     std::fs::write(root.join("src/lib.rs"), lib_rs).expect("write lib.rs");
 
-    let extractor = find_extractor();
     let output_dir = root.join("output");
     std::fs::create_dir_all(&output_dir).expect("mkdir output");
 
-    let status = Command::new(&extractor)
-        .current_dir(&root)
-        .arg("--manifest-path")
-        .arg(root.join("Cargo.toml"))
-        .arg("--output")
-        .arg(&output_dir)
-        .env("MDLR_QUIET_DIAGNOSTICS", "1")
-        .status()
-        .expect("run extractor");
+    mdlr_extract_rust::extract(
+        &root.join("Cargo.toml"),
+        &output_dir,
+        None,
+        &[],
+        &root,
+    )
+    .expect("run extractor");
 
-    assert!(status.success(), "extractor exited with {status}");
-
-    // Keep the tempdir alive by leaking it (tests are short-lived)
     let token_files = find_token_files(&output_dir);
     // Leak the tempdir so files survive for the caller
     std::mem::forget(tmp);

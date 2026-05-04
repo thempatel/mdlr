@@ -1,6 +1,6 @@
 use super::ignores_store::IgnoresStore;
-use super::types::FileCacheEntry;
 use anyhow::{Context, Result};
+use mdlr_core::FileCacheEntry;
 use std::fs;
 use std::path::{Path, PathBuf};
 

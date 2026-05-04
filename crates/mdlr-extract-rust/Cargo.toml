@@ -1,11 +1,7 @@
 [package]
 name = "mdlr-extract-rust"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
-
-[[bin]]
-name = "mdlr-extract-rust"
-path = "src/main.rs"
 
 [dependencies]
 mdlr-core = { workspace = true }
@@ -13,13 +9,12 @@ mdlr-cpd = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-clap = { workspace = true }
-ra_ap_hir = "=0.0.307"
-ra_ap_syntax = "=0.0.307"
-ra_ap_load-cargo = "=0.0.307"
-ra_ap_ide_db = "=0.0.307"
-ra_ap_vfs = "=0.0.307"
-ra_ap_project_model = "=0.0.307"
+ra_ap_hir = { workspace = true }
+ra_ap_syntax = { workspace = true }
+ra_ap_load-cargo = { workspace = true }
+ra_ap_ide_db = { workspace = true }
+ra_ap_vfs = { workspace = true }
+ra_ap_project_model = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

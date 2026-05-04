@@ -9,63 +9,31 @@ mod visitor;
 mod walk;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use mdlr_core::FileCacheEntry;
 use ra_ap_hir::{attach_db, Crate, Semantics};
 use ra_ap_load_cargo::{
     load_workspace_at, LoadCargoConfig, ProcMacroServerChoice,
 };
 use ra_ap_project_model::CargoConfig;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Cached extraction data for a single source file.
-/// Matches the `FileCacheEntry` format from `crates/mdlr/src/cache/types.rs`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FileCacheEntry {
-    source_path: PathBuf,
-    units: Vec<mdlr_core::Unit>,
-    cached_at: u64,
-}
-
-/// mdlr-extract-rust: Rust unit extraction via rust-analyzer.
+/// Extract Rust units from all workspace members at `manifest_path`,
+/// writing per-file `FileCacheEntry` JSON and `.tokens` blobs into `cache_dir`.
 ///
-/// Uses ra_ap_* crates (rust-analyzer's published APIs) to load and analyze
-/// Rust workspaces, extracting unit information with full type resolution.
-#[derive(Parser, Debug)]
-#[command(name = "mdlr-extract-rust")]
-struct Cli {
-    /// Path to the workspace Cargo.toml
-    #[arg(long)]
-    manifest_path: Option<PathBuf>,
-
-    /// Output directory for per-file JSON results (mirrors source tree structure)
-    #[arg(long)]
-    output: Option<PathBuf>,
-
-    /// Package names to extract from (if empty, extracts from all workspace members)
-    #[arg(long)]
-    package: Vec<String>,
-
-    /// Generation ID to stamp on all cache entries (used for stale-entry filtering)
-    #[arg(long)]
+/// `packages` filters which workspace members to extract from; pass an empty
+/// slice to extract from all local workspace members.
+///
+/// `cwd` is the directory used to distinguish workspace-local crates from
+/// external dependencies — when `packages` is empty, only crates whose root
+/// file lives under `cwd` are extracted. Pass the workspace root.
+pub fn extract(
+    manifest_path: &Path,
+    cache_dir: &Path,
     generation_id: Option<u64>,
-}
-
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("mdlr-extract-rust: {e:#}");
-        std::process::exit(1);
-    }
-}
-
-fn run() -> Result<()> {
-    let cli = Cli::parse();
-
-    let manifest_path =
-        cli.manifest_path.as_ref().context("--manifest-path is required")?;
-    let output_dir = cli.output.as_ref().context("--output is required")?;
-
+    packages: &[String],
+    cwd: &Path,
+) -> Result<()> {
     let manifest_path = manifest_path.canonicalize().with_context(|| {
         format!("Failed to resolve manifest path: {}", manifest_path.display())
     })?;
@@ -74,9 +42,6 @@ fn run() -> Result<()> {
         .parent()
         .context("manifest path has no parent directory")?;
 
-    // Load the workspace using rust-analyzer's infrastructure.
-    // Skip sysroot, build scripts, and dependency sources — we only need
-    // semantic resolution between workspace-local crates.
     let cargo_config =
         CargoConfig { sysroot: None, no_deps: true, ..CargoConfig::default() };
     let load_config = LoadCargoConfig {
@@ -93,11 +58,10 @@ fn run() -> Result<()> {
     )
     .context("Failed to load workspace")?;
 
-    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
 
-    // Determine which crates to extract
-    let target_packages: HashSet<String> = if !cli.package.is_empty() {
-        cli.package.iter().cloned().collect()
+    let target_packages: HashSet<String> = if !packages.is_empty() {
+        packages.iter().cloned().collect()
     } else {
         HashSet::new()
     };
@@ -130,7 +94,7 @@ fn run() -> Result<()> {
         visitor::extract_units(&db, &sema, &vfs, &target_crates, &cwd)
     });
 
-    let timestamp = cli.generation_id.unwrap_or_else(|| {
+    let timestamp = generation_id.unwrap_or_else(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -144,7 +108,7 @@ fn run() -> Result<()> {
             cached_at: timestamp,
         };
 
-        let mut output_file = output_dir.join(&source_path);
+        let mut output_file = cache_dir.join(&source_path);
         output_file.set_extension("json");
 
         if let Some(parent) = output_file.parent() {
@@ -177,7 +141,7 @@ fn run() -> Result<()> {
                 timestamp,
             );
             let token_bytes = mdlr_cpd::binary::serialize(&file_tokens);
-            let mut token_file = output_dir.join(&source_path);
+            let mut token_file = cache_dir.join(&source_path);
             token_file.set_extension("tokens");
             if let Err(e) = std::fs::write(&token_file, token_bytes) {
                 eprintln!("Failed to write tokens for {}: {}", source_path, e);
@@ -194,12 +158,12 @@ fn is_local_crate(
     db: &ra_ap_ide_db::RootDatabase,
     krate: &Crate,
     vfs: &ra_ap_vfs::Vfs,
-    cwd: &std::path::Path,
+    cwd: &Path,
 ) -> bool {
     let root_file = krate.root_file(db);
     let vfs_path = vfs.file_path(root_file);
     if let Some(abs_path) = vfs_path.as_path() {
-        let file_path: &std::path::Path = abs_path.as_ref();
+        let file_path: &Path = abs_path.as_ref();
         file_path.starts_with(cwd)
     } else {
         false

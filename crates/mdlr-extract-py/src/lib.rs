@@ -17,52 +17,22 @@ mod tokenizer;
 mod visitor;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use mdlr_core::FileCacheEntry;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Cached extraction data for a single source file.
-/// Matches the `FileCacheEntry` format from `crates/mdlr/src/cache/types.rs`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct FileCacheEntry {
-    source_path: PathBuf,
-    units: Vec<mdlr_core::Unit>,
-    cached_at: u64,
-}
-
-/// mdlr-extract-py: ruff-based Python unit extraction.
-#[derive(Parser, Debug)]
-#[command(name = "mdlr-extract-py")]
-struct Cli {
-    /// Root directory to scan for Python files
-    #[arg(long)]
-    root: PathBuf,
-
-    /// Output directory for per-file JSON results
-    #[arg(long)]
-    output: PathBuf,
-
-    /// Generation ID for stale-entry filtering
-    #[arg(long)]
+/// Extract Python units from all source files under `root`,
+/// writing per-file `FileCacheEntry` JSON and `.tokens` blobs into `cache_dir`.
+pub fn extract(
+    root: &Path,
+    cache_dir: &Path,
     generation_id: Option<u64>,
-}
-
-fn main() {
-    if let Err(e) = run() {
-        eprintln!("mdlr-extract-py: {e:#}");
-        std::process::exit(1);
-    }
-}
-
-fn run() -> Result<()> {
-    let cli = Cli::parse();
-
-    let root = cli.root.canonicalize().with_context(|| {
-        format!("Failed to resolve root path: {}", cli.root.display())
+) -> Result<()> {
+    let root = root.canonicalize().with_context(|| {
+        format!("Failed to resolve root path: {}", root.display())
     })?;
 
-    let timestamp = cli.generation_id.unwrap_or_else(|| {
+    let timestamp = generation_id.unwrap_or_else(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -72,8 +42,7 @@ fn run() -> Result<()> {
     let files = collect_files(&root)?;
 
     files.par_iter().for_each(|file_path| {
-        if let Err(e) = process_file(file_path, &root, &cli.output, timestamp)
-        {
+        if let Err(e) = process_file(file_path, &root, cache_dir, timestamp) {
             eprintln!("Failed to process {}: {e:#}", file_path.display());
         }
     });
@@ -82,7 +51,7 @@ fn run() -> Result<()> {
 }
 
 /// Collect all Python files under root, respecting .gitignore and common excludes.
-fn collect_files(root: &std::path::Path) -> Result<Vec<PathBuf>> {
+fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     let walker = ignore::WalkBuilder::new(root)
@@ -124,9 +93,9 @@ fn collect_files(root: &std::path::Path) -> Result<Vec<PathBuf>> {
 
 /// Parse and extract units from a single Python file, writing JSON output.
 fn process_file(
-    file_path: &std::path::Path,
-    root: &std::path::Path,
-    output_dir: &std::path::Path,
+    file_path: &Path,
+    root: &Path,
+    output_dir: &Path,
     timestamp: u64,
 ) -> Result<()> {
     let source = std::fs::read_to_string(file_path)
@@ -156,7 +125,6 @@ fn process_file(
         cached_at: timestamp,
     };
 
-    // Write to <output_dir>/<rel_path>.json
     let mut output_file = output_dir.join(&rel_path);
     output_file.set_extension("json");
 

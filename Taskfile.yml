@@ -33,9 +33,6 @@ tasks:
     dir: bin
     cmds:
       - ln -sf ../target/debug/mdlr .
-      - ln -sf ../target/debug/mdlr-extract-rust .
-      - ln -sf ../target/debug/mdlr-extract-ts .
-      - ln -sf ../target/debug/mdlr-extract-py .
 
   check:
     deps:
@@ -48,7 +45,4 @@ tasks:
     dir: "{{.ROOT_DIR}}"
     cmds:
       - cargo install --path crates/mdlr --root $HOME/.local
-      - cargo install --path tools/mdlr-extract-rust --root $HOME/.local
-      - cargo install --path tools/mdlr-extract-ts --root $HOME/.local
-      - cargo install --path tools/mdlr-extract-py --root $HOME/.local
       - cd tools/mdlr-extract-go && go build -o $HOME/.local/bin/mdlr-extract-go .
