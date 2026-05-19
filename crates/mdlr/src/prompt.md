@@ -60,7 +60,8 @@ mdlr metrics get cyclomatic
 ## Steps
 
 1. Run all unit tests.
-2. Run `mdlr check` to identify modularity issues
+   - **Optional**: run the test suite in coverage mode (e.g. `cargo llvm-cov --lcov --output-path lcov.info`, `coverage run --branch` + `coverage lcov`, `c8 --reporter=lcov`) and pass the resulting LCOV file to `mdlr check --cov <path>` in the next step. This adds `line_cov` and `uncov_branches` to the metrics output so you can prioritize under-tested units alongside complexity hot-spots.
+2. Run `mdlr check` to identify modularity issues (add `--cov lcov.info` if you generated coverage in step 1)
 3. Focus on high-value opportunities (top of each metric)
 4. Drill down with `mdlr check <symbol>` to get metrics for a specific unit
 5. Create a plan and consider alternatives before making changes
