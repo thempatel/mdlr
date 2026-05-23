@@ -128,9 +128,6 @@ Each field is the upper bound of its bucket — a value below `excellent` is "ex
 
 - [CLI Commands](reference/cli.md)
 - [Configuration](reference/config.md)
-- [Graph Structure](reference/graph.md)
-- [Supported Languages](reference/languages.md)
-- [Cache System](reference/cache.md)
 
 ## License
 
