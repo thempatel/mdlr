@@ -1,8 +1,11 @@
 # mdlr
 
-`mdlr` is a feedback tool that helps coding agents write less slop. Left to their own devices, agents pile up oversized functions, deeply nested branches, copy-pasted blocks, types tangled with too many responsibilities, and code paths nothing tests.
+`mdlr` is a feedback tool that helps coding agents write less slop. Over many edit cylces, agents tend to write code that is incoherent, difficult to read, and bloated with
+tests that are tautological or mock out the actual functionality that needs to be tested.
 
-`mdlr` scans the codebase and hands the agent a ranked list of the worst offenders — concrete, named symbols with a metric and a severity bucket — so it knows exactly what to clean up next. The loop is: make a batch of edits, run `mdlr check`, fix the top of the list, run it again. Supports Rust, Python, TypeScript, and Go.
+`mdlr` scans the codebase and hands coding agents a ranked list of the worst offenders — concrete, named symbols with a metric and a severity bucket — so it knows exactly what to clean up next. The loop is: make a batch of edits, run `mdlr check`, fix the top of the list, run it again, and repeat until satisfactory.
+
+Supports Rust, Python, TypeScript, and Go and uses standard meatures of software "quality" and code coverage.
 
 ## Installation
 
