@@ -13,15 +13,15 @@ brew install mdlr
 
 ## Quick Start
 
-From the root of your project, run:
+`mdlr` is built for coding agents. To kick off an improvement pass, tell your agent:
 
-```bash
-mdlr check
-```
+> Run `mdlr prompt` and follow the instructions.
 
-On a feature branch this analyzes only the files you've changed vs. `main`. On `main`/`master` it analyzes the whole repo. The first run extracts everything; later runs reuse a cache in `.mdlr/` and only re-extract files that changed.
+`mdlr prompt` prints a markdown brief that walks the agent through running `mdlr check`, reading the ranked output, picking the worst offenders, and verifying its fixes. The agent works the list from there — you just review the diffs.
 
-Output looks like this:
+On a feature branch `mdlr check` analyzes only the files you've changed vs. `main`. On `main`/`master` it analyzes the whole repo. The first run extracts everything; later runs reuse a cache in `.mdlr/` and only re-extract files that changed.
+
+If you want to see what the agent will be working with, run it yourself:
 
 ```
 $ mdlr check --pretty
@@ -34,7 +34,7 @@ cognitive      mdlr_extract_py::tokenizer::tokenize_py      199    critical
 cognitive      mdlr_metrics::coverage::CoverageMetrics::compute 71  critical
 ```
 
-Each row is a refactor candidate: the metric that flagged it, the fully-qualified symbol, the measured value, and a severity bucket. Start at the top.
+Each row is a refactor candidate: the metric that flagged it, the fully-qualified symbol, the measured value, and a severity bucket.
 
 ### Common flags
 
