@@ -1,8 +1,8 @@
 # mdlr
 
-`mdlr` scans a codebase and points you at the parts that are most likely to be a pain to work with — oversized functions, deeply nested logic, types with too many responsibilities, copy-pasted blocks, and (optionally) code that isn't covered by tests. It works on Rust, Python, TypeScript, and Go.
+`mdlr` is a feedback tool that helps coding agents write less slop. Left to their own devices, agents pile up oversized functions, deeply nested branches, copy-pasted blocks, types tangled with too many responsibilities, and code paths nothing tests.
 
-The output is a ranked list of concrete refactor targets. Pick the worst offenders, fix them, run it again.
+`mdlr` scans the codebase and hands the agent a ranked list of the worst offenders — concrete, named symbols with a metric and a severity bucket — so it knows exactly what to clean up next. The loop is: make a batch of edits, run `mdlr check`, fix the top of the list, run it again. Supports Rust, Python, TypeScript, and Go.
 
 ## Installation
 
