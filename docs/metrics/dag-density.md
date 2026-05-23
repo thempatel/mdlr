@@ -51,3 +51,13 @@ A → B    C → D
 - **0.5 - 1.0**: Loosely coupled, tree-like structure
 - **1.0 - 2.0**: Moderate coupling, typical for cohesive modules
 - **> 2.0**: Tightly coupled, consider refactoring to reduce dependencies
+
+## When Density Is Very High
+
+When density climbs well above 2.0, the codebase is highly interconnected, which compounds in a few painful ways:
+
+- **Hard to understand any single part in isolation** — every unit drags context from many others.
+- **Risky to change** — edits ripple through dependents in non-obvious ways.
+- **Difficult to test** — many dependencies to set up or mock for any given unit.
+
+The usual recourse is to identify and break circular dependencies and introduce interfaces or abstractions that let groups of units evolve independently. Pair this with fan-in / fan-out analysis to find the specific hubs driving the density up.

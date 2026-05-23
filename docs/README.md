@@ -113,17 +113,16 @@ Each field is the upper bound of its bucket — a value below `excellent` is "ex
 
 ### Metrics
 
-- [Overview](metrics/overview.md)
-- [DAG Density](metrics/dag-density.md)
-- [Fan-In](metrics/fan-in.md)
-- [Fan-Out](metrics/fan-out.md)
+- [Overview](metrics/overview.md) — summary of every metric, bucket labels, and reading fan-in × fan-out together
+- [DAG Density](metrics/dag-density.md) — how connected the dependency graph is overall
+- [Fan-In](metrics/fan-in.md) — how many units depend on each unit
+- [Fan-Out](metrics/fan-out.md) — how many units each unit depends on
 - [Complexity](metrics/complexity.md) — function size, parameters, cyclomatic complexity, max scope
 - [Cognitive Complexity](metrics/cognitive-complexity.md) — nesting-aware complexity metric
 - [File LOC](metrics/file-loc.md) — lines of code per file
 - [Impl Metrics](metrics/impl-metrics.md) — methods per struct, LCOM
 - [Line Coverage](metrics/line-coverage.md) — per-function test coverage from LCOV
 - [Uncovered Branches](metrics/uncov-branches.md) — per-function untaken branches from LCOV
-- [Interpreting Results](metrics/interpreting-results.md)
 
 ### Reference
 

@@ -61,3 +61,5 @@ If any of those 6 functions change their interface, `extract_from_node` may need
 - Main/entry points that wire things together
 - Facade classes intentionally aggregating functionality
 - Test setup functions
+
+For interpreting fan-out alongside fan-in (utility / orchestration / leaf / hub), see [Reading Fan-In Alongside Fan-Out](fan-in.md#reading-fan-in-alongside-fan-out).

@@ -58,3 +58,22 @@ extract_impl ──────────────┘
 - Entry points (main, handlers) - expected
 - Dead code - consider removing
 - Test utilities - expected
+
+## Reading Fan-In Alongside Fan-Out
+
+Fan-in and fan-out only mean something in combination. The four corners of the matrix correspond to recognisable module shapes:
+
+| Module Type | Fan-In | Fan-Out | Example |
+|-------------|--------|---------|---------|
+| Utility | High | Low | String helpers, validators — widely used, depend on nothing |
+| Orchestration | Low | High | `main()`, controllers — coordinate many things, few depend on them |
+| Leaf | Low | Low | Specialized algorithms — focused, self-contained |
+| Hub | High | High | Core domain objects — **warning sign** |
+
+**Hubs (high fan-in + high fan-out) are the most problematic combination:**
+
+- Many units depend on them, so their interface is hard to change without ripple effects.
+- They depend on many units, so they're affected by many changes.
+- They create coupling between otherwise unrelated parts of the codebase.
+
+When you spot a hub, the fix is usually to split it into smaller units with clearer responsibilities. Pull out the cohesive groups; let each piece be either widely used *or* doing a lot, not both.
