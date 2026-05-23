@@ -86,6 +86,29 @@ Analysis results are cached in `.mdlr/` at the project root. Add it to your `.gi
 .mdlr/
 ```
 
+## Configuration
+
+Defaults are tuned for typical codebases. If you want stricter or looser thresholds, drop a `.mdlr/config.yaml` in your project root and override just the values you care about — everything else keeps its default.
+
+```yaml
+thresholds:
+  # Stricter function-size budget than the default 20/50/100/200
+  function_size:
+    excellent: 15
+    good: 40
+    fair: 80
+    poor: 150
+
+  # Looser cyclomatic threshold for a codebase with lots of validators
+  cyclomatic:
+    excellent: 8
+    good: 15
+    fair: 25
+    poor: 40
+```
+
+Each field is the upper bound of its bucket — a value below `excellent` is "excellent", at or above `poor` is "critical". Lower-is-worse metrics like `line_cov` invert this (the field is the *low* boundary of each bucket). See [Configuration](reference/config.md) for the full schema covering every metric, display modes, and hub/CPD knobs.
+
 ## Documentation
 
 ### Metrics
@@ -97,7 +120,7 @@ Analysis results are cached in `.mdlr/` at the project root. Add it to your `.gi
 - [Complexity](metrics/complexity.md) — function size, parameters, cyclomatic complexity, max scope
 - [Cognitive Complexity](metrics/cognitive-complexity.md) — nesting-aware complexity metric
 - [File LOC](metrics/file-loc.md) — lines of code per file
-- [Impl Metrics](metrics/impl-metrics.md) — methods per impl, traits per type, LCOM
+- [Impl Metrics](metrics/impl-metrics.md) — methods per struct, LCOM
 - [Line Coverage](metrics/line-coverage.md) — per-function test coverage from LCOV
 - [Uncovered Branches](metrics/uncov-branches.md) — per-function untaken branches from LCOV
 - [Interpreting Results](metrics/interpreting-results.md)
@@ -109,10 +132,6 @@ Analysis results are cached in `.mdlr/` at the project root. Add it to your `.gi
 - [Graph Structure](reference/graph.md)
 - [Supported Languages](reference/languages.md)
 - [Cache System](reference/cache.md)
-
-### Roadmap
-
-- [Ignored Metrics](roadmap/ignored-metrics.md) — false positives and accepted design decisions
 
 ## License
 
