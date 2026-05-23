@@ -108,8 +108,8 @@ Top Fan-In:
 Metrics are most valuable when tracked over time:
 
 ```bash
-# Weekly analysis
-mdlr analyze --session my-project --format json >> metrics-history.jsonl
+# Weekly snapshot
+mdlr check -A --format json >> metrics-history.jsonl
 ```
 
 Watch for:

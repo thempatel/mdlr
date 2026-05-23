@@ -73,24 +73,58 @@ thresholds:
     fair: 20
     poor: 30
 
-  # Impl metrics
-  methods_per_impl:
+  cognitive:
     excellent: 5
     good: 10
     fair: 15
     poor: 25
 
-  traits_per_type:
+  max_scope:
+    excellent: 15
+    good: 30
+    fair: 50
+    poor: 100
+
+  # File-level metrics
+  file_loc:
+    excellent: 200
+    good: 400
+    fair: 600
+    poor: 1000
+
+  duplication_pct:
     excellent: 3
     good: 5
-    fair: 8
-    poor: 12
+    fair: 10
+    poor: 20
 
+  # Impl metrics
+  methods_per_struct:
+    excellent: 5
+    good: 10
+    fair: 15
+    poor: 25
+
+  # LCOM4 = connected components. 1 = cohesive, 2+ = should split.
   lcom:
-    excellent: 0.2
-    good: 0.4
-    fair: 0.6
-    poor: 0.8
+    excellent: 2
+    good: 3
+    fair: 4
+    poor: 5
+
+  # Coverage metrics (only emitted when --cov is passed).
+  # line_cov is lower-is-worse: each field is the LOW boundary of that bucket.
+  line_cov:
+    excellent: 90
+    good: 80
+    fair: 70
+    poor: 60
+
+  uncov_branches:
+    excellent: 1
+    good: 3
+    fair: 6
+    poor: 10
 ```
 
 ### Display Mode
@@ -129,14 +163,31 @@ The default thresholds are based on empirical observations of healthy codebases:
 | function_size | < 20 | < 50 | < 100 | < 200 | >= 200 |
 | params | < 3 | < 5 | < 7 | < 10 | >= 10 |
 | cyclomatic | < 5 | < 10 | < 20 | < 30 | >= 30 |
+| cognitive | < 5 | < 10 | < 15 | < 25 | >= 25 |
+| max_scope | < 15 | < 30 | < 50 | < 100 | >= 100 |
+
+### File Metrics
+
+| Metric | Excellent | Good | Fair | Poor | Critical |
+|--------|-----------|------|------|------|----------|
+| file_loc | < 200 | < 400 | < 600 | < 1000 | >= 1000 |
+| duplication_pct | < 3 | < 5 | < 10 | < 20 | >= 20 |
 
 ### Impl Metrics
 
 | Metric | Excellent | Good | Fair | Poor | Critical |
 |--------|-----------|------|------|------|----------|
-| methods_per_impl | < 5 | < 10 | < 15 | < 25 | >= 25 |
-| traits_per_type | < 3 | < 5 | < 8 | < 12 | >= 12 |
-| lcom | < 0.2 | < 0.4 | < 0.6 | < 0.8 | >= 0.8 |
+| methods_per_struct | < 5 | < 10 | < 15 | < 25 | >= 25 |
+| lcom | < 2 | < 3 | < 4 | < 5 | >= 5 |
+
+### Coverage Metrics
+
+Emitted only when `--cov <lcov>` is passed to `mdlr check`. `line_cov` is **lower-is-worse**: each threshold is the low boundary of that bucket (e.g. value >= 90 is excellent, value < 60 is critical).
+
+| Metric | Excellent | Good | Fair | Poor | Critical |
+|--------|-----------|------|------|------|----------|
+| line_cov | >= 90 | >= 80 | >= 70 | >= 60 | < 60 |
+| uncov_branches | < 1 | < 3 | < 6 | < 10 | >= 10 |
 
 ## Example Configuration
 

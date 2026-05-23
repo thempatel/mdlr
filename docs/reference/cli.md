@@ -20,7 +20,7 @@ mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>] 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `target` | `.` | Path (file/directory) or fully qualified symbol ID to analyze |
-| `-k` | `3` | Max opportunities to show per metric (-1 for all) |
+| `-k` | `10` | Max opportunities to show per metric (-1 for all) |
 | `--pretty` | false | Pretty print as aligned table |
 | `--format` | `text` | Output format: `text` or `json` |
 | `-A, --all` | false | Analyze all files even when on a branch |
@@ -62,7 +62,7 @@ mdlr check -A -f src/metrics
 # Scope to a directory (diff mode on branches)
 mdlr check -f src/metrics
 
-# Show all opportunities (not just top 3)
+# Show all opportunities (not just top 10)
 mdlr check -k -1
 
 # Pretty-printed table output

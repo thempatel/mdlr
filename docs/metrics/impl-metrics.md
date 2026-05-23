@@ -1,17 +1,17 @@
 # Impl Metrics
 
-Impl metrics measure the structure and cohesion of `impl` blocks (Rust's equivalent of classes). These help identify god classes, interface pollution, and lack of cohesion.
+Impl metrics measure the size and cohesion of structs and their `impl` blocks (Rust's equivalent of classes). These help identify god classes and lack of cohesion.
 
 ## Metrics
 
-### Methods per Impl
+### Methods per Struct
 
-Counts the number of methods in each impl block.
+Counts the number of methods defined on each struct (aggregated across its `impl` blocks).
 
 | Statistic | Description |
 |-----------|-------------|
-| max | Most methods in any impl |
-| mean | Average methods per impl |
+| max | Most methods on any struct |
+| mean | Average methods per struct |
 | p90 | 90th percentile |
 
 **Default thresholds:**
@@ -24,32 +24,11 @@ Counts the number of methods in each impl block.
 | Poor | < 25 methods |
 | Critical | >= 25 methods |
 
-**Why it matters:** Impls with many methods often indicate a "god class" that has too many responsibilities. Consider splitting into multiple focused types.
-
-### Traits per Type
-
-Counts how many traits each type implements.
-
-| Statistic | Description |
-|-----------|-------------|
-| max | Most traits on any type |
-| mean | Average traits per type |
-
-**Default thresholds:**
-
-| Bucket | Threshold |
-|--------|-----------|
-| Excellent | < 3 traits |
-| Good | < 5 traits |
-| Fair | < 8 traits |
-| Poor | < 12 traits |
-| Critical | >= 12 traits |
-
-**Why it matters:** Types implementing many traits may have unclear responsibilities or be trying to satisfy too many interfaces. This can indicate interface pollution.
+**Why it matters:** Structs with many methods often indicate a "god class" that has too many responsibilities. Consider splitting into multiple focused types.
 
 ### LCOM4 (Lack of Cohesion of Methods)
 
-Measures how cohesive an impl is by counting connected components in a method graph.
+Measures how cohesive a struct is by counting connected components in a method graph.
 
 LCOM4 builds an undirected graph where:
 - **Nodes** are methods of the struct
@@ -62,8 +41,8 @@ LCOM4 = the number of connected components in this graph.
 
 | Statistic | Description |
 |-----------|-------------|
-| max | Highest LCOM4 (least cohesive impl) |
-| mean | Average LCOM4 across impls |
+| max | Highest LCOM4 (least cohesive struct) |
+| mean | Average LCOM4 across structs |
 
 **Default thresholds:**
 
@@ -80,31 +59,19 @@ LCOM4 = the number of connected components in this graph.
 ## Example Output
 
 ```
-Impl Metrics
-============
-
-Methods/Impl: max=17, mean=2.1, p90=5
-Traits/Type:  max=2, mean=1.1
-LCOM4:        max=3, mean=1.2
-
-Largest Impls:
-  impl CacheStore (17 methods)
-  impl SemanticTags (7 methods)
-
-Types with Many Traits:
-  Config (3 traits)
-
-Least Cohesive Impls (LCOM4 >= 2):
-  impl ComplexityMetrics (LCOM4=3, 3 connected components)
-  impl CacheStore (LCOM4=2, 2 connected components)
+$ mdlr check --pretty
+metric              symbol                                  value  bucket
+methods_per_struct  mdlr::cache::store::CacheStore          17     fair
+methods_per_struct  mdlr_core::semantic::SemanticTags       7      good
+lcom                mdlr_metrics::complexity::ComplexityMetrics  3   fair
+lcom                mdlr::cache::store::CacheStore          2      good
 ```
 
 ## Interpretation
 
-- **Large impls (many methods)**: Consider the Single Responsibility Principle. Can this be split into multiple focused types?
-- **Many traits per type**: Is this type trying to do too much? Could some traits be combined or the type split?
-- **LCOM4 >= 2**: The impl has disconnected groups of methods. Either:
-  - The impl should be split into cohesive groups (one per connected component)
+- **Large structs (many methods)**: Consider the Single Responsibility Principle. Can this be split into multiple focused types?
+- **LCOM4 >= 2**: The struct has disconnected groups of methods. Either:
+  - The struct should be split into cohesive groups (one per connected component)
   - Methods are stateless utilities (which is fine)
   - Field tracking may be incomplete (check if methods access fields through nested calls)
 
@@ -112,17 +79,11 @@ Least Cohesive Impls (LCOM4 >= 2):
 
 ```yaml
 thresholds:
-  methods_per_impl:
+  methods_per_struct:
     excellent: 5
     good: 10
     fair: 15
     poor: 25
-
-  traits_per_type:
-    excellent: 3
-    good: 5
-    fair: 8
-    poor: 12
 
   lcom:
     excellent: 2

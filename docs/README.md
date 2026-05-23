@@ -109,7 +109,6 @@ Analysis results are cached in `.mdlr/` at the project root. Add it to your `.gi
 - [Graph Structure](reference/graph.md)
 - [Supported Languages](reference/languages.md)
 - [Cache System](reference/cache.md)
-- [HIR Extractor](reference/hir-extract.md) — compiler-based Rust extraction with full type resolution
 
 ### Roadmap
 
