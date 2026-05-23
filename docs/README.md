@@ -7,6 +7,8 @@ tests that are tautological or mock out the actual functionality that needs to b
 
 Supports Rust, Python, TypeScript, and Go and uses standard meatures of software "quality" and code coverage.
 
+**Caveat**: This tool makes no claims on its ability to help agents write archictecturally sound code. The goal is to help agents write clean code so that it is easier for humans to read and get up to speed.
+
 ## Installation
 
 ```bash
