@@ -231,6 +231,76 @@ fn git_diff_name_only(root: &Path, args: &[&str]) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Emit hazard warnings about suspicious coverage results: no source files
+/// matched, mostly-missing data, or no branch records.
+fn warn_coverage_anomalies(progress: &CheckProgress, cov: &CoverageMetrics) {
+    if cov.units_analyzed > 0
+        && cov.lcov_files_total > 0
+        && cov.lcov_files_matched == 0
+    {
+        progress.warn(&format!(
+            "lcov references {} file(s) but none match any analyzed source — check that SF: paths point at source files mdlr sees (often a sourcemap issue: lcov references built .js while graph holds .ts, or paths are rooted differently than --root)",
+            cov.lcov_files_total
+        ));
+    } else if cov.units_analyzed > 0
+        && cov.units_without_data * 2 >= cov.units_analyzed
+    {
+        progress.warn(&format!(
+            "{}/{} analyzed units had no coverage data — is the lcov file stale or incomplete?",
+            cov.units_without_data, cov.units_analyzed
+        ));
+    }
+    if !cov.has_branches {
+        progress.warn(
+            "lcov has no BRDA records — uncov_branches omitted (re-run coverage with branch instrumentation: c8 --all, coverage run --branch, llvm-cov --branch)",
+        );
+    }
+}
+
+/// Load `--cov` lcov files and compute coverage. Returns `None` when no
+/// coverage files were passed or both coverage metrics are disabled.
+fn compute_coverage(
+    graph: &Graph,
+    cov_files: &[PathBuf],
+    repo_root: &Path,
+    scope_files: Option<&HashSet<PathBuf>>,
+    config: &config::Config,
+    progress: &CheckProgress,
+) -> Option<CoverageMetrics> {
+    let coverage_disabled =
+        config.is_disabled("line_cov") && config.is_disabled("uncov_branches");
+    if cov_files.is_empty() || coverage_disabled {
+        return None;
+    }
+
+    let spinner = progress.start_spinner("Loading coverage");
+    let mut lcov = LcovData::new();
+    let mut load_warnings: Vec<String> = Vec::new();
+    for path in cov_files {
+        let resolved = if path.is_absolute() {
+            path.clone()
+        } else {
+            repo_root.join(path)
+        };
+        if let Err(e) = lcov.parse_and_merge(&resolved, repo_root) {
+            load_warnings
+                .push(format!("skipped --cov {}: {e}", resolved.display()));
+        }
+    }
+    if load_warnings.is_empty() {
+        spinner.finish();
+    } else {
+        spinner.finish_warn("partial");
+    }
+    for w in &load_warnings {
+        progress.warn(w);
+    }
+
+    let cov = CoverageMetrics::compute(graph, &lcov, repo_root, scope_files);
+    warn_coverage_anomalies(progress, &cov);
+    Some(cov)
+}
+
 #[tracing::instrument(name = "compute_metrics", skip_all)]
 fn compute_all_metrics(
     units: Vec<Unit>,
@@ -284,61 +354,14 @@ fn compute_all_metrics(
         duplication
     };
 
-    // Skip coverage parsing when both coverage metrics are disabled.
-    let coverage_disabled =
-        config.is_disabled("line_cov") && config.is_disabled("uncov_branches");
-    let coverage = if cov_files.is_empty() || coverage_disabled {
-        None
-    } else {
-        let spinner = progress.start_spinner("Loading coverage");
-        let mut lcov = LcovData::new();
-        let mut load_warnings: Vec<String> = Vec::new();
-        for path in cov_files {
-            let resolved = if path.is_absolute() {
-                path.clone()
-            } else {
-                repo_root.join(path)
-            };
-            if let Err(e) = lcov.parse_and_merge(&resolved, repo_root) {
-                load_warnings.push(format!(
-                    "skipped --cov {}: {e}",
-                    resolved.display()
-                ));
-            }
-        }
-        if load_warnings.is_empty() {
-            spinner.finish();
-        } else {
-            spinner.finish_warn("partial");
-        }
-        for w in &load_warnings {
-            progress.warn(w);
-        }
-        let cov =
-            CoverageMetrics::compute(&graph, &lcov, repo_root, scope_files);
-        if cov.units_analyzed > 0
-            && cov.lcov_files_total > 0
-            && cov.lcov_files_matched == 0
-        {
-            progress.warn(&format!(
-                "lcov references {} file(s) but none match any analyzed source — check that SF: paths point at source files mdlr sees (often a sourcemap issue: lcov references built .js while graph holds .ts, or paths are rooted differently than --root)",
-                cov.lcov_files_total
-            ));
-        } else if cov.units_analyzed > 0
-            && cov.units_without_data * 2 >= cov.units_analyzed
-        {
-            progress.warn(&format!(
-                "{}/{} analyzed units had no coverage data — is the lcov file stale or incomplete?",
-                cov.units_without_data, cov.units_analyzed
-            ));
-        }
-        if !cov.has_branches {
-            progress.warn(
-                "lcov has no BRDA records — uncov_branches omitted (re-run coverage with branch instrumentation: c8 --all, coverage run --branch, llvm-cov --branch)",
-            );
-        }
-        Some(cov)
-    };
+    let coverage = compute_coverage(
+        &graph,
+        cov_files,
+        repo_root,
+        scope_files,
+        config,
+        progress,
+    );
 
     ComputedMetrics {
         graph,
