@@ -35,6 +35,13 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Write `.mdlr/config.yaml` under `root` with the given contents.
+    fn write_config(root: &Path, yaml: &str) {
+        let config_dir = root.join(".mdlr");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(config_dir.join("config.yaml"), yaml).unwrap();
+    }
+
     #[test]
     fn test_load_default_when_no_config() {
         let temp = TempDir::new().unwrap();
@@ -45,10 +52,8 @@ mod tests {
     #[test]
     fn test_load_from_current_dir() {
         let temp = TempDir::new().unwrap();
-        let config_dir = temp.path().join(".mdlr");
-        fs::create_dir(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.yaml"),
+        write_config(
+            temp.path(),
             r#"
 thresholds:
   dag_density:
@@ -57,8 +62,7 @@ thresholds:
     fair: 1.2
     poor: 1.8
 "#,
-        )
-        .unwrap();
+        );
 
         let config = load_from_dir(temp.path()).unwrap();
         assert_eq!(config.thresholds.dag_density.excellent, 0.3);
@@ -69,17 +73,14 @@ thresholds:
     #[test]
     fn test_load_disabled_metrics() {
         let temp = TempDir::new().unwrap();
-        let config_dir = temp.path().join(".mdlr");
-        fs::create_dir(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.yaml"),
+        write_config(
+            temp.path(),
             r#"
 disabled_metrics:
   - lcom
   - duplication_pct
 "#,
-        )
-        .unwrap();
+        );
 
         let config = load_from_dir(temp.path()).unwrap();
         assert!(config.is_disabled("lcom"));
@@ -90,10 +91,8 @@ disabled_metrics:
     #[test]
     fn test_load_from_dir_does_not_search_parents() {
         let temp = TempDir::new().unwrap();
-        let config_dir = temp.path().join(".mdlr");
-        fs::create_dir(&config_dir).unwrap();
-        fs::write(
-            config_dir.join("config.yaml"),
+        write_config(
+            temp.path(),
             r#"
 thresholds:
   dag_density:
@@ -102,8 +101,7 @@ thresholds:
     fair: 0.75
     poor: 1.0
 "#,
-        )
-        .unwrap();
+        );
 
         let child_dir = temp.path().join("child").join("grandchild");
         fs::create_dir_all(&child_dir).unwrap();
