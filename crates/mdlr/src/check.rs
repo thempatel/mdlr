@@ -266,19 +266,28 @@ fn compute_all_metrics(
     });
     bar.finish();
 
-    let token_file_count = all_tokens.len() as u64;
-    let bar = progress.start_bar("Detecting duplicates", token_file_count);
-    let duplication = tracing::info_span!("cpd").in_scope(|| {
-        let clones = mdlr_cpd::find_clones_with_progress(
-            all_tokens,
-            config.cpd.min_tokens,
-            |i| bar.set_position(i as u64),
-        );
-        mdlr_cpd::compute_duplication(&clones, all_tokens, scope_files)
-    });
-    bar.finish();
+    // CPD is the expensive pass; skip it entirely when duplication_pct is off.
+    let duplication = if config.is_disabled("duplication_pct") {
+        mdlr_cpd::DuplicationMetrics::default()
+    } else {
+        let token_file_count = all_tokens.len() as u64;
+        let bar = progress.start_bar("Detecting duplicates", token_file_count);
+        let duplication = tracing::info_span!("cpd").in_scope(|| {
+            let clones = mdlr_cpd::find_clones_with_progress(
+                all_tokens,
+                config.cpd.min_tokens,
+                |i| bar.set_position(i as u64),
+            );
+            mdlr_cpd::compute_duplication(&clones, all_tokens, scope_files)
+        });
+        bar.finish();
+        duplication
+    };
 
-    let coverage = if cov_files.is_empty() {
+    // Skip coverage parsing when both coverage metrics are disabled.
+    let coverage_disabled =
+        config.is_disabled("line_cov") && config.is_disabled("uncov_branches");
+    let coverage = if cov_files.is_empty() || coverage_disabled {
         None
     } else {
         let spinner = progress.start_spinner("Loading coverage");
@@ -430,19 +439,82 @@ fn format_json_output(
             .collect::<Vec<_>>(),
     });
 
-    let mut metrics_json = serde_json::json!({
-        "dag_density": build_bucketed_json(&bucketed.dag_density),
-        "fan_in": build_fan_metrics_json(&bucketed.fan_in, &computed.structural.fan_in.distribution),
-        "fan_out": build_fan_metrics_json(&bucketed.fan_out, &computed.structural.fan_out.distribution),
-        "complexity": build_complexity_json(&computed.complexity),
-        "struct": build_struct_json(&computed.struct_metrics),
-        "file_loc": build_file_loc_json(&computed.file_loc),
-        "duplication": duplication_json,
-    });
-    if let Some(cov) = computed.coverage.as_ref() {
-        metrics_json["coverage"] =
-            crate::json_output::build_coverage_json(cov);
+    // Build per-metric, omitting disabled metrics — including inside the
+    // composite `complexity`/`struct`/`coverage` objects (dropped entirely if
+    // every metric they hold is disabled).
+    let enabled = |name: &str| !config.is_disabled(name);
+    let prune = |mut obj: serde_json::Value,
+                 fields: &[(&str, &str)]|
+     -> Option<serde_json::Value> {
+        let map = obj.as_object_mut().expect("builder returns an object");
+        for (json_key, metric) in fields {
+            if config.is_disabled(metric) {
+                map.remove(*json_key);
+            }
+        }
+        if map.is_empty() { None } else { Some(obj) }
+    };
+
+    let mut metrics_json = serde_json::Map::new();
+    if enabled("dag_density") {
+        metrics_json.insert(
+            "dag_density".into(),
+            build_bucketed_json(&bucketed.dag_density),
+        );
     }
+    if enabled("fan_in") {
+        metrics_json.insert(
+            "fan_in".into(),
+            build_fan_metrics_json(
+                &bucketed.fan_in,
+                &computed.structural.fan_in.distribution,
+            ),
+        );
+    }
+    if enabled("fan_out") {
+        metrics_json.insert(
+            "fan_out".into(),
+            build_fan_metrics_json(
+                &bucketed.fan_out,
+                &computed.structural.fan_out.distribution,
+            ),
+        );
+    }
+    if let Some(complexity) = prune(
+        build_complexity_json(&computed.complexity),
+        &[
+            ("size", "function_size"),
+            ("params", "params"),
+            ("cyclomatic", "cyclomatic"),
+            ("max_scope", "max_scope"),
+        ],
+    ) {
+        metrics_json.insert("complexity".into(), complexity);
+    }
+    if let Some(struct_json) = prune(
+        build_struct_json(&computed.struct_metrics),
+        &[("methods_per_struct", "methods_per_struct"), ("lcom", "lcom")],
+    ) {
+        metrics_json.insert("struct".into(), struct_json);
+    }
+    if enabled("file_loc") {
+        metrics_json.insert(
+            "file_loc".into(),
+            build_file_loc_json(&computed.file_loc),
+        );
+    }
+    if enabled("duplication_pct") {
+        metrics_json.insert("duplication".into(), duplication_json);
+    }
+    if let Some(cov) = computed.coverage.as_ref() {
+        if let Some(coverage) = prune(
+            crate::json_output::build_coverage_json(cov),
+            &[("line_cov", "line_cov"), ("uncov_branches", "uncov_branches")],
+        ) {
+            metrics_json.insert("coverage".into(), coverage);
+        }
+    }
+    let metrics_json = serde_json::Value::Object(metrics_json);
     let output = serde_json::json!({
         "files": {
             "extracted": extracted_count,
@@ -566,6 +638,8 @@ fn build_symbol_json(
             ));
         }
     }
+
+    metric_sources.retain(|(name, ..)| !config.is_disabled(name));
 
     for (name, distribution, thresholds, direction) in &metric_sources {
         insert_symbol_metric(

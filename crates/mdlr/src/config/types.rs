@@ -340,6 +340,26 @@ impl Default for CpdConfig {
     }
 }
 
+/// Canonical metric names — the identifiers shown by `mdlr metrics ls`,
+/// printed in the `metric` column / JSON keys, and accepted in
+/// `disabled_metrics`. The single source of truth for which names are valid.
+pub const METRIC_NAMES: &[&str] = &[
+    "dag_density",
+    "fan_in",
+    "fan_out",
+    "function_size",
+    "params",
+    "cyclomatic",
+    "cognitive",
+    "max_scope",
+    "methods_per_struct",
+    "lcom",
+    "file_loc",
+    "duplication_pct",
+    "line_cov",
+    "uncov_branches",
+];
+
 /// Main configuration struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -351,6 +371,18 @@ pub struct Config {
     pub hub: HubThresholds,
     #[serde(default)]
     pub cpd: CpdConfig,
+    /// Canonical metric names to suppress from `check` output. Disabling is an
+    /// output-control concern: bundled compute passes still run, but the CPD
+    /// and coverage passes are skipped when their metrics are fully disabled.
+    #[serde(default)]
+    pub disabled_metrics: Vec<String>,
+}
+
+impl Config {
+    /// Whether a metric (by canonical name) is disabled in this config.
+    pub fn is_disabled(&self, metric: &str) -> bool {
+        self.disabled_metrics.iter().any(|m| m == metric)
+    }
 }
 
 #[cfg(test)]
@@ -382,5 +414,28 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.display.mode, DisplayMode::Both);
         assert_eq!(config.thresholds.dag_density.excellent, 0.5);
+        assert!(config.disabled_metrics.is_empty());
+    }
+
+    #[test]
+    fn test_is_disabled() {
+        let config = Config {
+            disabled_metrics: vec!["lcom".to_string(), "fan_in".to_string()],
+            ..Default::default()
+        };
+        assert!(config.is_disabled("lcom"));
+        assert!(config.is_disabled("fan_in"));
+        assert!(!config.is_disabled("cyclomatic"));
+    }
+
+    #[test]
+    fn metric_names_cover_all_thresholds() {
+        // Every threshold-backed metric name must be a recognized canonical
+        // name so it can be disabled.
+        for name in
+            ["dag_density", "fan_in", "lcom", "duplication_pct", "line_cov"]
+        {
+            assert!(METRIC_NAMES.contains(&name), "missing {name}");
+        }
     }
 }

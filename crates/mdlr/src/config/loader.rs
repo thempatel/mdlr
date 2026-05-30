@@ -1,4 +1,4 @@
-use super::types::Config;
+use super::types::{Config, METRIC_NAMES};
 use anyhow::Result;
 use std::fs;
 use std::path::Path;
@@ -10,9 +10,22 @@ pub fn load_from_dir(root: &Path) -> Result<Config> {
     if config_path.exists() {
         let contents = fs::read_to_string(&config_path)?;
         let config: Config = serde_yaml::from_str(&contents)?;
+        warn_unknown_disabled_metrics(&config);
         Ok(config)
     } else {
         Ok(Config::default())
+    }
+}
+
+/// Warn (and otherwise ignore) entries in `disabled_metrics` that don't name a
+/// known metric — a typo leaves the metric enabled, so surface it on stderr.
+fn warn_unknown_disabled_metrics(config: &Config) {
+    for name in &config.disabled_metrics {
+        if !METRIC_NAMES.contains(&name.as_str()) {
+            eprintln!(
+                "warning: unknown metric '{name}' in disabled_metrics (ignored). Run 'mdlr metrics ls' to see available metrics."
+            );
+        }
     }
 }
 
@@ -51,6 +64,27 @@ thresholds:
         assert_eq!(config.thresholds.dag_density.excellent, 0.3);
         // Defaults still work for unspecified fields
         assert_eq!(config.thresholds.fan_in_max.excellent, 3.0);
+    }
+
+    #[test]
+    fn test_load_disabled_metrics() {
+        let temp = TempDir::new().unwrap();
+        let config_dir = temp.path().join(".mdlr");
+        fs::create_dir(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.yaml"),
+            r#"
+disabled_metrics:
+  - lcom
+  - duplication_pct
+"#,
+        )
+        .unwrap();
+
+        let config = load_from_dir(temp.path()).unwrap();
+        assert!(config.is_disabled("lcom"));
+        assert!(config.is_disabled("duplication_pct"));
+        assert!(!config.is_disabled("cyclomatic"));
     }
 
     #[test]

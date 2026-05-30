@@ -142,6 +142,26 @@ display:
 | `label` | `excellent` |
 | `value` | `0.419` |
 
+### Disabling Metrics
+
+List metric names under `disabled_metrics` to suppress them from `mdlr check` output (text rows, JSON fields, and the per-symbol view):
+
+```yaml
+disabled_metrics:
+  - lcom
+  - duplication_pct
+  - uncov_branches
+```
+
+Use the canonical metric names shown by `mdlr metrics ls` — `fan_in`, `fan_out`, `function_size`, `params`, `cyclomatic`, `cognitive`, `max_scope`, `methods_per_struct`, `lcom`, `file_loc`, `duplication_pct`, `dag_density`, `line_cov`, `uncov_branches`. Note these are the *metric* names, not the threshold keys: disable `fan_in`, not `fan_in_max`.
+
+Behavior:
+
+- **Output-control, not compute-control.** A disabled metric is omitted from output, but most metrics share a bundled computation pass, so disabling one rarely saves work. The exceptions are skipped outright: the copy-paste detection pass is skipped when `duplication_pct` is disabled, and coverage parsing is skipped when both `line_cov` and `uncov_branches` are disabled.
+- **Composite JSON objects** (`complexity`, `struct`, `coverage`) drop only the disabled sub-fields, and are omitted entirely when all their metrics are disabled.
+- **Unknown names** are reported as a warning on stderr and ignored — a typo leaves the metric enabled, so check the warning.
+- `mdlr metrics ls` and `mdlr metrics get <name>` annotate disabled metrics with `(disabled)`.
+
 ## Default Thresholds
 
 The default thresholds are based on empirical observations of healthy codebases:

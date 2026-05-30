@@ -73,10 +73,19 @@ pub fn handle_metrics(
     command: MetricsCommand,
     explicit_root: Option<&Path>,
 ) -> Result<()> {
+    // Load config (if any) so we can flag disabled metrics. Falls back to
+    // defaults when run outside a project.
+    let root = find_project_root(Path::new("."), explicit_root);
+    let config = CacheStore::open(&root)
+        .and_then(|s| config::load_from_dir(s.root()))
+        .unwrap_or_default();
+
     match command {
         MetricsCommand::Ls => {
             for (name, description) in get_metric_descriptions() {
-                println!("{}", name);
+                let suffix =
+                    if config.is_disabled(name) { "  (disabled)" } else { "" };
+                println!("{}{}", name, suffix);
                 println!("  {}", description);
                 println!();
             }
@@ -89,12 +98,13 @@ pub fn handle_metrics(
                 Some((name, description)) => {
                     println!("{}", name);
                     println!("  {}", description);
+                    if config.is_disabled(name) {
+                        println!(
+                            "  (disabled — suppressed from check output)"
+                        );
+                    }
                     println!();
 
-                    let root =
-                        find_project_root(Path::new("."), explicit_root);
-                    let store = CacheStore::open(&root)?;
-                    let config = config::load_from_dir(store.root())?;
                     if let Some(t) = config.thresholds.get(name) {
                         println!("thresholds:");
                         println!("  excellent  < {}", t.excellent);

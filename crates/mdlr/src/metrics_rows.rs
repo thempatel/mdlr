@@ -213,8 +213,8 @@ impl FloatMetricSpec<'_> {
 /// Bundled metric specifications for collection
 struct MetricSpecs<'a> {
     int_specs: Vec<IntMetricSpec<'a>>,
-    fan_in_spec: HubFilteredFanInSpec<'a>,
-    lcom_spec: IntMetricSpec<'a>,
+    fan_in_spec: Option<HubFilteredFanInSpec<'a>>,
+    lcom_spec: Option<IntMetricSpec<'a>>,
     float_specs: Vec<FloatMetricSpec<'a>>,
 }
 
@@ -309,22 +309,25 @@ impl<'a> MetricSpecs<'a> {
                 });
             }
         }
-        MetricSpecs {
-            int_specs,
-            fan_in_spec: HubFilteredFanInSpec {
+        // Disabling is output-control: drop specs for disabled metrics so they
+        // never reach text rows or the symbol view.
+        int_specs.retain(|spec| !config.is_disabled(spec.name));
+
+        let fan_in_spec =
+            (!config.is_disabled("fan_in")).then(|| HubFilteredFanInSpec {
                 distribution: &m.structural.fan_in.distribution,
                 thresholds: &t.fan_in_max,
                 hubs: &m.structural.hubs,
-            },
-            lcom_spec: IntMetricSpec {
-                name: "lcom",
-                distribution: &m.struct_metrics.lcom.distribution,
-                thresholds: &t.lcom,
-                boring_threshold: 0,
-                direction: SortDirection::Desc,
-            },
-            float_specs: vec![],
-        }
+            });
+        let lcom_spec = (!config.is_disabled("lcom")).then(|| IntMetricSpec {
+            name: "lcom",
+            distribution: &m.struct_metrics.lcom.distribution,
+            thresholds: &t.lcom,
+            boring_threshold: 0,
+            direction: SortDirection::Desc,
+        });
+
+        MetricSpecs { int_specs, fan_in_spec, lcom_spec, float_specs: vec![] }
     }
 
     fn collect_filtered(&self, filter: &str) -> Vec<MetricRow> {
@@ -332,8 +335,12 @@ impl<'a> MetricSpecs<'a> {
         for spec in &self.int_specs {
             spec.collect_filtered(&mut rows, filter);
         }
-        self.fan_in_spec.collect_filtered(&mut rows, filter);
-        self.lcom_spec.collect_filtered(&mut rows, filter);
+        if let Some(fan_in_spec) = &self.fan_in_spec {
+            fan_in_spec.collect_filtered(&mut rows, filter);
+        }
+        if let Some(lcom_spec) = &self.lcom_spec {
+            lcom_spec.collect_filtered(&mut rows, filter);
+        }
         for spec in &self.float_specs {
             spec.collect_filtered(&mut rows, filter);
         }
@@ -345,8 +352,12 @@ impl<'a> MetricSpecs<'a> {
         for spec in &self.int_specs {
             spec.collect_all(&mut rows);
         }
-        self.fan_in_spec.collect_all(&mut rows);
-        self.lcom_spec.collect_all(&mut rows);
+        if let Some(fan_in_spec) = &self.fan_in_spec {
+            fan_in_spec.collect_all(&mut rows);
+        }
+        if let Some(lcom_spec) = &self.lcom_spec {
+            lcom_spec.collect_all(&mut rows);
+        }
         for spec in &self.float_specs {
             spec.collect_all(&mut rows);
         }
