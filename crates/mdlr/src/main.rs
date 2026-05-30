@@ -51,7 +51,7 @@ pub fn find_project_root(
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let root = cli.root.as_deref();
+    let root = cli.root;
 
     match cli.command {
         Command::Check {
@@ -64,28 +64,36 @@ fn main() -> Result<()> {
             filter,
             quiet,
             cov,
-        } => check::handle_check(
-            target.as_deref(),
+        } => check::handle_check(check::CheckArgs {
+            target,
             k,
             pretty,
             format,
             timing,
             all,
-            filter.as_deref(),
+            filter,
             quiet,
-            &cov,
+            cov,
             root,
-        ),
+        }),
         Command::Metrics { command } => {
-            metrics_commands::handle_metrics(command, root)
+            metrics_commands::handle_metrics(command, root.as_deref())
         }
         Command::Prompt => handle_prompt(),
         Command::Ls { path, kind, format } => {
-            handle_ls(&path, kind, format, root)
+            handle_ls(&path, kind, format, root.as_deref())
         }
-        Command::Get { symbol, format } => handle_get(&symbol, format, root),
+        Command::Get { symbol, format } => {
+            handle_get(&symbol, format, root.as_deref())
+        }
         Command::Ignore { metric, symbol, remove, list } => {
-            ignore_commands::handle_ignore(metric, symbol, remove, list, root)
+            ignore_commands::handle_ignore(
+                metric,
+                symbol,
+                remove,
+                list,
+                root.as_deref(),
+            )
         }
     }
 }

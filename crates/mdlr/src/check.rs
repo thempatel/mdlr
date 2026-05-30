@@ -821,21 +821,40 @@ fn extract_and_analyze(
     Ok((computed, entry_count))
 }
 
-pub fn handle_check(
-    target: Option<&str>,
-    k: i32,
-    pretty: bool,
-    format: OutputFormat,
-    timing: bool,
-    all: bool,
-    filter_dir: Option<&str>,
-    quiet: bool,
-    cov_files: &[PathBuf],
-    explicit_root: Option<&Path>,
-) -> Result<()> {
+/// Inputs for [`handle_check`], mirroring the CLI `check` subcommand plus the
+/// global `--root` flag.
+pub struct CheckArgs {
+    pub target: Option<String>,
+    pub k: i32,
+    pub pretty: bool,
+    pub format: OutputFormat,
+    pub timing: bool,
+    pub all: bool,
+    pub filter: Option<String>,
+    pub quiet: bool,
+    pub cov: Vec<PathBuf>,
+    pub root: Option<PathBuf>,
+}
+
+pub fn handle_check(args: CheckArgs) -> Result<()> {
+    let CheckArgs {
+        target,
+        k,
+        pretty,
+        format,
+        timing,
+        all,
+        filter: filter_dir,
+        quiet,
+        cov,
+        root,
+    } = args;
+    let target = target.as_deref();
+    let filter_dir = filter_dir.as_deref();
+
     let printer = setup_timing(timing);
     let progress = CheckProgress::new(quiet);
-    let ctx = CheckContext::new(explicit_root)?;
+    let ctx = CheckContext::new(root.as_deref())?;
 
     // Resolve --filter directory to a canonical path
     let folder = if let Some(dir) = filter_dir {
@@ -873,7 +892,7 @@ pub fn handle_check(
         &filter,
         folder.as_deref(),
         &progress,
-        cov_files,
+        &cov,
     )?;
 
     let result = match format {
