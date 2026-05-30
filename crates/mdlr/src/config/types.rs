@@ -92,40 +92,27 @@ impl Default for DisplayConfig {
     }
 }
 
-/// All thresholds configuration
+/// All thresholds configuration. Container-level `#[serde(default)]` fills any
+/// missing field from the `Default` impl below, so a config may override just
+/// the metrics it cares about.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ThresholdsConfig {
-    #[serde(default = "default_dag_density")]
     pub dag_density: MetricThresholds,
-    #[serde(default = "default_fan_in_max")]
     pub fan_in_max: MetricThresholds,
-    #[serde(default = "default_fan_in_mean")]
     pub fan_in_mean: MetricThresholds,
-    #[serde(default = "default_fan_out_max")]
     pub fan_out_max: MetricThresholds,
-    #[serde(default = "default_fan_out_mean")]
     pub fan_out_mean: MetricThresholds,
-    #[serde(default = "default_function_size")]
     pub function_size: MetricThresholds,
-    #[serde(default = "default_params")]
     pub params: MetricThresholds,
-    #[serde(default = "default_cyclomatic")]
     pub cyclomatic: MetricThresholds,
-    #[serde(default = "default_cognitive")]
     pub cognitive: MetricThresholds,
-    #[serde(default = "default_methods_per_struct")]
     pub methods_per_struct: MetricThresholds,
-    #[serde(default = "default_lcom")]
     pub lcom: MetricThresholds,
-    #[serde(default = "default_file_loc")]
     pub file_loc: MetricThresholds,
-    #[serde(default = "default_max_scope")]
     pub max_scope: MetricThresholds,
-    #[serde(default = "default_duplication_pct")]
     pub duplication_pct: MetricThresholds,
-    #[serde(default = "default_line_cov")]
     pub line_cov: MetricThresholds,
-    #[serde(default = "default_uncov_branches")]
     pub uncov_branches: MetricThresholds,
 }
 
@@ -211,56 +198,6 @@ mod defaults {
 
     pub const UNCOV_BRANCHES: MetricThresholds =
         MetricThresholds { excellent: 1.0, good: 3.0, fair: 6.0, poor: 10.0 };
-}
-
-// Serde default functions (required for partial deserialization)
-fn default_dag_density() -> MetricThresholds {
-    defaults::DAG_DENSITY
-}
-fn default_fan_in_max() -> MetricThresholds {
-    defaults::FAN_IN_MAX
-}
-fn default_fan_in_mean() -> MetricThresholds {
-    defaults::FAN_IN_MEAN
-}
-fn default_fan_out_max() -> MetricThresholds {
-    defaults::FAN_OUT_MAX
-}
-fn default_fan_out_mean() -> MetricThresholds {
-    defaults::FAN_OUT_MEAN
-}
-fn default_function_size() -> MetricThresholds {
-    defaults::FUNCTION_SIZE
-}
-fn default_params() -> MetricThresholds {
-    defaults::PARAMS
-}
-fn default_cyclomatic() -> MetricThresholds {
-    defaults::CYCLOMATIC
-}
-fn default_cognitive() -> MetricThresholds {
-    defaults::COGNITIVE
-}
-fn default_methods_per_struct() -> MetricThresholds {
-    defaults::METHODS_PER_STRUCT
-}
-fn default_lcom() -> MetricThresholds {
-    defaults::LCOM
-}
-fn default_file_loc() -> MetricThresholds {
-    defaults::FILE_LOC
-}
-fn default_max_scope() -> MetricThresholds {
-    defaults::MAX_SCOPE
-}
-fn default_duplication_pct() -> MetricThresholds {
-    defaults::DUPLICATION_PCT
-}
-fn default_line_cov() -> MetricThresholds {
-    defaults::LINE_COV
-}
-fn default_uncov_branches() -> MetricThresholds {
-    defaults::UNCOV_BRANCHES
 }
 
 impl Default for ThresholdsConfig {
