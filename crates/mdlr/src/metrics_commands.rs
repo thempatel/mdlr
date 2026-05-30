@@ -82,49 +82,52 @@ pub fn handle_metrics(
 
     match command {
         MetricsCommand::Ls => {
-            for (name, description) in get_metric_descriptions() {
-                let suffix =
-                    if config.is_disabled(name) { "  (disabled)" } else { "" };
-                println!("{}{}", name, suffix);
-                println!("  {}", description);
-                println!();
-            }
+            print_metric_list(&config);
+            Ok(())
         }
-        MetricsCommand::Get { name } => {
-            let descriptions = get_metric_descriptions();
-            let metric = descriptions.iter().find(|(n, _)| *n == name);
-
-            match metric {
-                Some((name, description)) => {
-                    println!("{}", name);
-                    println!("  {}", description);
-                    if config.is_disabled(name) {
-                        println!(
-                            "  (disabled — suppressed from check output)"
-                        );
-                    }
-                    println!();
-
-                    if let Some(t) = config.thresholds.get(name) {
-                        println!("thresholds:");
-                        println!("  excellent  < {}", t.excellent);
-                        println!("  good       < {}", t.good);
-                        println!("  fair       < {}", t.fair);
-                        println!("  poor       < {}", t.poor);
-                        println!("  critical   >= {}", t.poor);
-                    } else {
-                        println!("(no thresholds defined)");
-                    }
-                }
-                None => {
-                    bail!(
-                        "Unknown metric '{}'. Run 'mdlr metrics ls' to see available metrics.",
-                        name
-                    );
-                }
-            }
-        }
+        MetricsCommand::Get { name } => print_metric_detail(&name, &config),
     }
+}
 
+/// Print every metric with its description, flagging disabled ones.
+fn print_metric_list(config: &config::Config) {
+    for (name, description) in get_metric_descriptions() {
+        let suffix =
+            if config.is_disabled(name) { "  (disabled)" } else { "" };
+        println!("{}{}", name, suffix);
+        println!("  {}", description);
+        println!();
+    }
+}
+
+/// Print one metric's description, disabled state, and thresholds.
+fn print_metric_detail(name: &str, config: &config::Config) -> Result<()> {
+    let descriptions = get_metric_descriptions();
+    let Some((name, description)) =
+        descriptions.iter().find(|(n, _)| *n == name)
+    else {
+        bail!(
+            "Unknown metric '{}'. Run 'mdlr metrics ls' to see available metrics.",
+            name
+        );
+    };
+
+    println!("{}", name);
+    println!("  {}", description);
+    if config.is_disabled(name) {
+        println!("  (disabled — suppressed from check output)");
+    }
+    println!();
+
+    if let Some(t) = config.thresholds.get(name) {
+        println!("thresholds:");
+        println!("  excellent  < {}", t.excellent);
+        println!("  good       < {}", t.good);
+        println!("  fair       < {}", t.fair);
+        println!("  poor       < {}", t.poor);
+        println!("  critical   >= {}", t.poor);
+    } else {
+        println!("(no thresholds defined)");
+    }
     Ok(())
 }
