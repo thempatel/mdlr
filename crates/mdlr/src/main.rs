@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 
 mod cache;
 mod check;
+mod check_output;
 mod cli;
 mod config;
 mod extraction;
+mod git_diff;
 mod ignore_commands;
 mod json_output;
 mod metrics_commands;
