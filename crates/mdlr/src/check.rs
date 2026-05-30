@@ -445,12 +445,31 @@ fn format_json_output(
         return Ok(());
     }
 
+    let partial_count =
+        computed.graph.units.iter().filter(|u| u.partial).count();
+
+    let output = serde_json::json!({
+        "files": {
+            "extracted": extracted_count,
+        },
+        "units": computed.graph.units.len(),
+        "partial_units": partial_count,
+        "edges": computed.graph.edges.len(),
+        "metrics": build_metrics_json(computed, config),
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+
+    Ok(())
+}
+
+/// Assemble the full `metrics` JSON object, then drop any disabled metrics.
+fn build_metrics_json(
+    computed: &ComputedMetrics,
+    config: &config::Config,
+) -> serde_json::Value {
     let thresholds = Thresholds::default();
     let bucketed =
         BucketedMetrics::from_metrics(&computed.structural, &thresholds);
-
-    let partial_count =
-        computed.graph.units.iter().filter(|u| u.partial).count();
 
     let duplication_json = serde_json::json!({
         "max": computed.duplication.max,
@@ -462,94 +481,73 @@ fn format_json_output(
             .collect::<Vec<_>>(),
     });
 
-    // Build per-metric, omitting disabled metrics — including inside the
-    // composite `complexity`/`struct`/`coverage` objects (dropped entirely if
-    // every metric they hold is disabled).
-    let enabled = |name: &str| !config.is_disabled(name);
-    let prune = |mut obj: serde_json::Value,
-                 fields: &[(&str, &str)]|
-     -> Option<serde_json::Value> {
-        let map = obj.as_object_mut().expect("builder returns an object");
-        for (json_key, metric) in fields {
-            if config.is_disabled(metric) {
-                map.remove(*json_key);
+    let mut metrics = serde_json::json!({
+        "dag_density": build_bucketed_json(&bucketed.dag_density),
+        "fan_in": build_fan_metrics_json(&bucketed.fan_in, &computed.structural.fan_in.distribution),
+        "fan_out": build_fan_metrics_json(&bucketed.fan_out, &computed.structural.fan_out.distribution),
+        "complexity": build_complexity_json(&computed.complexity),
+        "struct": build_struct_json(&computed.struct_metrics),
+        "file_loc": build_file_loc_json(&computed.file_loc),
+        "duplication": duplication_json,
+    });
+    if let Some(cov) = computed.coverage.as_ref() {
+        metrics["coverage"] = crate::json_output::build_coverage_json(cov);
+    }
+
+    prune_disabled_metrics(metrics.as_object_mut().expect("object"), config);
+    metrics
+}
+
+/// Remove disabled metrics from the assembled `metrics` object: top-level keys
+/// outright, and individual fields inside the composite `complexity`/`struct`/
+/// `coverage` objects (dropping a composite entirely once it is emptied).
+fn prune_disabled_metrics(
+    metrics: &mut serde_json::Map<String, serde_json::Value>,
+    config: &config::Config,
+) {
+    // (metric name, top-level JSON key)
+    const TOP_LEVEL: &[(&str, &str)] = &[
+        ("dag_density", "dag_density"),
+        ("fan_in", "fan_in"),
+        ("fan_out", "fan_out"),
+        ("file_loc", "file_loc"),
+        ("duplication_pct", "duplication"),
+    ];
+    // (metric name, composite parent key, sub-field key)
+    const NESTED: &[(&str, &str, &str)] = &[
+        ("function_size", "complexity", "size"),
+        ("params", "complexity", "params"),
+        ("cyclomatic", "complexity", "cyclomatic"),
+        ("max_scope", "complexity", "max_scope"),
+        ("methods_per_struct", "struct", "methods_per_struct"),
+        ("lcom", "struct", "lcom"),
+        ("line_cov", "coverage", "line_cov"),
+        ("uncov_branches", "coverage", "uncov_branches"),
+    ];
+
+    for (metric, key) in TOP_LEVEL {
+        if config.is_disabled(metric) {
+            metrics.remove(*key);
+        }
+    }
+    for (metric, parent, sub) in NESTED {
+        if config.is_disabled(metric) {
+            if let Some(obj) =
+                metrics.get_mut(*parent).and_then(|v| v.as_object_mut())
+            {
+                obj.remove(*sub);
             }
         }
-        if map.is_empty() { None } else { Some(obj) }
-    };
-
-    let mut metrics_json = serde_json::Map::new();
-    if enabled("dag_density") {
-        metrics_json.insert(
-            "dag_density".into(),
-            build_bucketed_json(&bucketed.dag_density),
-        );
     }
-    if enabled("fan_in") {
-        metrics_json.insert(
-            "fan_in".into(),
-            build_fan_metrics_json(
-                &bucketed.fan_in,
-                &computed.structural.fan_in.distribution,
-            ),
-        );
-    }
-    if enabled("fan_out") {
-        metrics_json.insert(
-            "fan_out".into(),
-            build_fan_metrics_json(
-                &bucketed.fan_out,
-                &computed.structural.fan_out.distribution,
-            ),
-        );
-    }
-    if let Some(complexity) = prune(
-        build_complexity_json(&computed.complexity),
-        &[
-            ("size", "function_size"),
-            ("params", "params"),
-            ("cyclomatic", "cyclomatic"),
-            ("max_scope", "max_scope"),
-        ],
-    ) {
-        metrics_json.insert("complexity".into(), complexity);
-    }
-    if let Some(struct_json) = prune(
-        build_struct_json(&computed.struct_metrics),
-        &[("methods_per_struct", "methods_per_struct"), ("lcom", "lcom")],
-    ) {
-        metrics_json.insert("struct".into(), struct_json);
-    }
-    if enabled("file_loc") {
-        metrics_json.insert(
-            "file_loc".into(),
-            build_file_loc_json(&computed.file_loc),
-        );
-    }
-    if enabled("duplication_pct") {
-        metrics_json.insert("duplication".into(), duplication_json);
-    }
-    if let Some(cov) = computed.coverage.as_ref() {
-        if let Some(coverage) = prune(
-            crate::json_output::build_coverage_json(cov),
-            &[("line_cov", "line_cov"), ("uncov_branches", "uncov_branches")],
-        ) {
-            metrics_json.insert("coverage".into(), coverage);
+    for parent in ["complexity", "struct", "coverage"] {
+        let empty = metrics
+            .get(parent)
+            .and_then(|v| v.as_object())
+            .is_some_and(|o| o.is_empty());
+        if empty {
+            metrics.remove(parent);
         }
     }
-    let metrics_json = serde_json::Value::Object(metrics_json);
-    let output = serde_json::json!({
-        "files": {
-            "extracted": extracted_count,
-        },
-        "units": computed.graph.units.len(),
-        "partial_units": partial_count,
-        "edges": computed.graph.edges.len(),
-        "metrics": metrics_json,
-    });
-    println!("{}", serde_json::to_string_pretty(&output)?);
-
-    Ok(())
 }
 
 /// Insert a metric entry for a symbol if found in the distribution.
