@@ -11,10 +11,32 @@ Supports Rust, Python, TypeScript, and Go and uses standard meatures of software
 
 ## Installation
 
+`mdlr` is distributed as a Homebrew **cask** (macOS only):
+
 ```bash
-brew tap thempatel/tap
-brew install mdlr
+brew install --cask thempatel/tap/mdlr
 ```
+
+To upgrade later, refresh the tap first — Homebrew won't see a new release until
+its cached tap clone is updated:
+
+```bash
+brew update
+brew upgrade --cask mdlr
+```
+
+Linux users download a tarball from the [latest GitHub Release](https://github.com/thempatel/mdlr/releases/latest)
+(Homebrew casks are macOS-only). Each tarball contains both the `mdlr` binary and
+its `mdlr-extract-go` sibling — keep them together in the same directory.
+
+| OS    | Arch   | libc  | Install                                   |
+| ----- | ------ | ----- | ----------------------------------------- |
+| macOS | arm64  | —     | `brew install --cask thempatel/tap/mdlr`  |
+| macOS | x86_64 | —     | `brew install --cask thempatel/tap/mdlr`  |
+| Linux | x86_64 | glibc | `mdlr_<ver>_linux_amd64.tar.gz`           |
+| Linux | arm64  | glibc | `mdlr_<ver>_linux_arm64.tar.gz`           |
+| Linux | x86_64 | musl  | `mdlr_<ver>_linux_amd64_musl.tar.gz` (Alpine / distroless) |
+| Linux | arm64  | musl  | `mdlr_<ver>_linux_arm64_musl.tar.gz` (Alpine / distroless) |
 
 ## Quick Start
 

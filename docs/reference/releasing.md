@@ -13,20 +13,20 @@ side by side:
 - `mdlr` — the Rust binary (rust/ts/py extractors linked in)
 - `mdlr-extract-go` — the Go extractor, spawned at runtime as a sibling of `mdlr`
 
-Targets and how they're installed:
+The build matrix (see the [README](../README.md#installation) for how consumers
+install each one):
 
-| OS    | Arch   | libc  | Install path                          |
-| ----- | ------ | ----- | ------------------------------------- |
-| macOS | arm64  | —     | `brew install thempatel/tap/mdlr`     |
-| macOS | x86_64 | —     | `brew install thempatel/tap/mdlr`     |
-| Linux | arm64  | glibc | Release tarball (manual / mise / aqua)|
-| Linux | x86_64 | glibc | Release tarball (manual / mise / aqua)|
-| Linux | arm64  | musl  | Release tarball (Alpine / distroless) |
-| Linux | x86_64 | musl  | Release tarball (Alpine / distroless) |
+| OS    | Arch   | libc  | Distribution channel |
+| ----- | ------ | ----- | -------------------- |
+| macOS | arm64  | —     | Homebrew cask        |
+| macOS | x86_64 | —     | Homebrew cask        |
+| Linux | arm64  | glibc | Release tarball      |
+| Linux | x86_64 | glibc | Release tarball      |
+| Linux | arm64  | musl  | Release tarball      |
+| Linux | x86_64 | musl  | Release tarball      |
 
-macOS is distributed via a Homebrew Cask. Linux is **not** installed through
-Homebrew (casks are macOS-only) — Linux users download the Release tarball
-directly or via a tool like `mise` / `aqua`. The musl builds are static,
+macOS ships via a Homebrew Cask; Linux is **not** installed through Homebrew
+(casks are macOS-only) and ships as Release tarballs. The musl builds are static,
 self-contained binaries for Alpine / distroless / portable use; the glibc builds
 are dynamically linked.
 
