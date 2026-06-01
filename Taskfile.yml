@@ -46,3 +46,19 @@ tasks:
     cmds:
       - cargo install --path crates/mdlr --root $HOME/.local
       - cd tools/mdlr-extract-go && go build -o $HOME/.local/bin/mdlr-extract-go .
+
+  release:
+    desc: Cut a release with GoReleaser (publishes the GitHub Release + pushes the cask).
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      # ulimit must be raised in the same shell as goreleaser: zig's linker opens
+      # every .rlib at once and overruns macOS's default 256-fd limit. gh mints an
+      # ephemeral token (repo scope) for both the Release and the tap push.
+      # Wrapped in bash -c because Task's embedded shell has no `ulimit` builtin.
+      - bash -c 'ulimit -n 65536 && GITHUB_TOKEN=$(gh auth token) goreleaser release --clean'
+
+  release-snapshot:
+    desc: Dry-run the release matrix locally without publishing.
+    dir: "{{.ROOT_DIR}}"
+    cmds:
+      - bash -c 'ulimit -n 65536 && goreleaser release --snapshot --clean'

@@ -1,0 +1,130 @@
+# GoReleaser config for mdlr. Released from a laptop, no CI — see RELEASING.md.
+#
+# Ships two binaries per platform in one archive: `mdlr` (Rust) and
+# `mdlr-extract-go` (Go). They MUST travel together — at runtime `mdlr` finds
+# `mdlr-extract-go` as a sibling in its own directory (extraction.rs).
+#
+# Distribution:
+#   - macOS  -> Homebrew Cask (thempatel/homebrew-tap)
+#   - Linux  -> GitHub Release tarballs, for manual install or mise/aqua/etc.
+#              glibc + static-musl, x86_64 + arm64.
+#
+# The Rust binary is cross-compiled with cargo-zigbuild (zig); the Go binary
+# with the native toolchain. Requires `ulimit -n 65536` (the ~250-rlib link step
+# overruns macOS's default fd limit) — set it in the shell that runs goreleaser.
+version: 2
+
+project_name: mdlr
+
+builds:
+  # --- Rust binary, one build id per OS so each pairs into a clean archive ---
+  - id: mdlr-macos
+    builder: rust
+    binary: mdlr
+    targets:
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+    flags:
+      - --release
+      - --package=mdlr
+    env:
+      # GoReleaser's tag is the source of truth; build.rs bakes it into the
+      # binary so `mdlr --version` matches the release.
+      - "MDLR_VERSION={{ .Version }}"
+    hooks:
+      post:
+        # zig does not sign Mach-O binaries, and macOS SIGKILLs unsigned arm64
+        # binaries. Ad-hoc sign both darwin outputs. Homebrew strips the cask
+        # download quarantine, so ad-hoc (no Apple account) is sufficient.
+        - cmd: codesign --sign - --force --timestamp=none "{{ .Path }}"
+
+  - id: mdlr-linux
+    builder: rust
+    binary: mdlr
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+    flags:
+      - --release
+      - --package=mdlr
+    env:
+      - "MDLR_VERSION={{ .Version }}"
+
+  - id: mdlr-musl
+    builder: rust
+    binary: mdlr
+    targets:
+      - x86_64-unknown-linux-musl
+      - aarch64-unknown-linux-musl
+    flags:
+      - --release
+      - --package=mdlr
+    env:
+      - "MDLR_VERSION={{ .Version }}"
+
+  # --- Go extractor. Pure Go (no cgo); a static linux binary runs on both glibc
+  #     and musl, so one linux build feeds both linux archives. ---
+  - id: go-macos
+    builder: go
+    binary: mdlr-extract-go
+    main: .
+    dir: tools/mdlr-extract-go
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: go-linux
+    builder: go
+    binary: mdlr-extract-go
+    main: .
+    dir: tools/mdlr-extract-go
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  # macOS: consumed by the Homebrew cask.
+  - id: macos
+    ids: [mdlr-macos, go-macos]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  # Linux glibc: manual / mise / aqua install from the GitHub Release.
+  - id: linux
+    ids: [mdlr-linux, go-linux]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  # Linux static musl (Alpine/distroless). Suffix avoids colliding with glibc,
+  # which shares the same os/arch.
+  - id: linux-musl
+    ids: [mdlr-musl, go-linux]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}_musl"
+
+homebrew_casks:
+  - name: mdlr
+    ids: [macos] # macOS only; Linux installs come from the Release tarballs
+    binaries:
+      - mdlr
+      - mdlr-extract-go
+    repository:
+      owner: thempatel
+      name: homebrew-tap
+    homepage: "https://github.com/thempatel/mdlr"
+    description: "Polyglot code-analysis tool that builds a graph of source-level units and computes structural metrics"
+    license: "MIT"
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

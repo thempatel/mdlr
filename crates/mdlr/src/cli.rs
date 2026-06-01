@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "mdlr")]
 #[command(about = "Modularity analyzer for code")]
-#[command(version)]
+#[command(version = env!("MDLR_VERSION"))]
 pub struct Cli {
     /// Project root directory (skips automatic discovery)
     #[arg(long, global = true)]

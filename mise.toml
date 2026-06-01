@@ -1,0 +1,5 @@
+[tools]
+# Release toolchain (see RELEASING.md). zig backs cargo-zigbuild's cross-linking.
+zig = "0.16.0"
+"github:rust-cross/cargo-zigbuild" = "0.22.3"
+goreleaser = "2.16.0"

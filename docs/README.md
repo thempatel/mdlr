@@ -133,6 +133,7 @@ Each field is the upper bound of its bucket — a value below `excellent` is "ex
 
 - [CLI Commands](reference/cli.md)
 - [Configuration](reference/config.md)
+- [Releasing](reference/releasing.md)
 
 ## License
 
