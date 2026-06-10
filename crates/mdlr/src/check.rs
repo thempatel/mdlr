@@ -414,6 +414,25 @@ fn run_extractor(
     }
 }
 
+/// Run every language extractor whose project markers are present.
+fn run_extractors(ctx: &CheckContext, progress: &CheckProgress) {
+    let root = ctx.store.root();
+    type ExtractFn = fn(&CacheStore, u64) -> Result<bool>;
+    let extractors: [(&str, bool, ExtractFn); 4] = [
+        ("Extracting Rust", root.join("Cargo.toml").exists(), extract_rust),
+        ("Extracting TypeScript", has_ts_files(root), extract_ts),
+        ("Extracting Go", root.join("go.mod").exists(), extract_go),
+        ("Extracting Python", has_python_project(root), extract_py),
+    ];
+    for (name, detected, extract) in extractors {
+        if detected {
+            run_extractor(name, progress, || {
+                extract(&ctx.store, ctx.generation_id)
+            });
+        }
+    }
+}
+
 /// Extract, load, validate, and compute all metrics.
 fn extract_and_analyze(
     ctx: &CheckContext,
@@ -422,28 +441,7 @@ fn extract_and_analyze(
     progress: &CheckProgress,
     cov_files: &[PathBuf],
 ) -> Result<(ComputedMetrics, usize, Option<DisplayScope>)> {
-    let root = ctx.store.root();
-
-    if root.join("Cargo.toml").exists() {
-        run_extractor("Extracting Rust", progress, || {
-            extract_rust(&ctx.store, ctx.generation_id)
-        });
-    }
-    if has_ts_files(root) {
-        run_extractor("Extracting TypeScript", progress, || {
-            extract_ts(&ctx.store, ctx.generation_id)
-        });
-    }
-    if root.join("go.mod").exists() {
-        run_extractor("Extracting Go", progress, || {
-            extract_go(&ctx.store, ctx.generation_id)
-        });
-    }
-    if has_python_project(root) {
-        run_extractor("Extracting Python", progress, || {
-            extract_py(&ctx.store, ctx.generation_id)
-        });
-    }
+    run_extractors(ctx, progress);
 
     let spinner = progress.start_spinner("Loading cache");
     let (entries, units, all_tokens, scope) =
