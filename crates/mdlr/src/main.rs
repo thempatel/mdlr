@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 mod cache;
 mod check;
 mod check_output;
+mod check_scope;
 mod cli;
 mod config;
 mod display_scope;

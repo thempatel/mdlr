@@ -7,50 +7,104 @@ use std::io::Write;
 
 use crate::cache::CacheStore;
 use crate::check::{CheckFilter, ComputedMetrics, ScopeInfo};
+use crate::check_scope::describe_scope;
+use crate::cli::OutputFormat;
 use crate::config;
+use crate::display_scope::DisplayScope;
 use crate::json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
     build_file_loc_json, build_struct_json,
 };
-use crate::metrics_rows::{MetricsBundle, collect_metric_rows};
+use crate::metrics_rows::{
+    MetricSpecs, MetricsBundle, RowSelection, collect_metric_rows,
+};
 use mdlr_metrics::{BucketedMetrics, Thresholds};
 
-/// Extract symbol filter string from CheckFilter
-fn get_symbol_filter(filter: &CheckFilter) -> Option<&str> {
-    match filter {
-        CheckFilter::Symbol(s) => Some(s.as_str()),
-        _ => None,
-    }
-}
-
-/// Format and print text output
-pub(crate) fn format_text_output(
-    computed: &ComputedMetrics,
-    config: &config::Config,
-    k: i32,
-    pretty: bool,
-    filter: &CheckFilter,
-    store: &CacheStore,
-    scope: &ScopeInfo,
-) -> Result<()> {
-    // Diff mode switches scope silently on git state; always say which scope
-    // this run reported on.
-    println!("scope: {}", scope.description);
-
-    let bundle = MetricsBundle {
+/// Bundle the computed metrics for row collection.
+fn metrics_bundle(computed: &ComputedMetrics) -> MetricsBundle<'_> {
+    MetricsBundle {
         structural: &computed.structural,
         complexity: &computed.complexity,
         struct_metrics: &computed.struct_metrics,
         file_loc: &computed.file_loc,
         duplication: &computed.duplication,
         coverage: computed.coverage.as_ref(),
-    };
-    let symbol_filter = get_symbol_filter(filter);
-    let ignores = store.ignores().load_ignores().unwrap_or_default();
-    let rows =
-        collect_metric_rows(&bundle, config, k, symbol_filter, &ignores);
+    }
+}
 
-    if pretty {
+/// Everything `render` needs beyond the computed metrics and config.
+pub(crate) struct RenderArgs<'a> {
+    pub format: OutputFormat,
+    pub k: i32,
+    pub pretty: bool,
+    pub entry_count: usize,
+    pub filter: &'a CheckFilter,
+    pub scope: Option<&'a DisplayScope>,
+}
+
+/// Render `check` results in the requested output format.
+pub(crate) fn render(
+    computed: &ComputedMetrics,
+    config: &config::Config,
+    args: &RenderArgs,
+    store: &CacheStore,
+) -> anyhow::Result<()> {
+    let scope_info = describe_scope(args.filter, args.scope);
+    match args.format {
+        OutputFormat::Text => format_text_output(
+            computed,
+            config,
+            &TextOptions {
+                k: args.k,
+                pretty: args.pretty,
+                filter: args.filter,
+                scope: &scope_info,
+            },
+            store,
+        ),
+        OutputFormat::Json => {
+            format_json_output(computed, config, args, &scope_info)
+        }
+    }
+}
+
+/// How rows should be selected for this run's filter.
+fn row_selection<'a>(filter: &'a CheckFilter, k: i32) -> RowSelection<'a> {
+    match filter {
+        CheckFilter::Symbol(s) => RowSelection::Symbol(s.as_str()),
+        _ => RowSelection::Top(k),
+    }
+}
+
+/// Presentation options for `format_text_output`.
+struct TextOptions<'a> {
+    k: i32,
+    pretty: bool,
+    filter: &'a CheckFilter,
+    scope: &'a ScopeInfo,
+}
+
+/// Format and print text output
+fn format_text_output(
+    computed: &ComputedMetrics,
+    config: &config::Config,
+    opts: &TextOptions,
+    store: &CacheStore,
+) -> Result<()> {
+    // Diff mode switches scope silently on git state; always say which scope
+    // this run reported on.
+    println!("scope: {}", opts.scope.description);
+
+    let bundle = metrics_bundle(computed);
+    let ignores = store.ignores().load_ignores().unwrap_or_default();
+    let rows = collect_metric_rows(
+        &bundle,
+        config,
+        row_selection(opts.filter, opts.k),
+        &ignores,
+    );
+
+    if opts.pretty {
         let mut tw = tabwriter::TabWriter::new(vec![]);
         writeln!(tw, "metric\tsymbol\tvalue\tbucket")?;
         for (metric, symbol, value, bucket) in &rows {
@@ -78,15 +132,14 @@ pub(crate) fn format_text_output(
 }
 
 /// Format and print JSON output
-pub(crate) fn format_json_output(
+fn format_json_output(
     computed: &ComputedMetrics,
     config: &config::Config,
-    extracted_count: usize,
-    filter: &CheckFilter,
+    args: &RenderArgs,
     scope: &ScopeInfo,
 ) -> Result<()> {
     // When filtering by symbol, output specific metrics for that symbol
-    if let CheckFilter::Symbol(symbol_id) = filter {
+    if let CheckFilter::Symbol(symbol_id) = args.filter {
         let output = build_symbol_json(computed, config, symbol_id);
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
@@ -101,7 +154,7 @@ pub(crate) fn format_json_output(
             "description": scope.description,
         },
         "files": {
-            "extracted": extracted_count,
+            "extracted": args.entry_count,
         },
         "units": computed.graph.units.len(),
         "partial_units": partial_count,
@@ -118,7 +171,15 @@ fn build_metrics_json(
     computed: &ComputedMetrics,
     config: &config::Config,
 ) -> serde_json::Value {
-    let thresholds = Thresholds::default();
+    // Bucket the structural summary with the user's configured thresholds.
+    let t = &config.thresholds;
+    let thresholds = Thresholds {
+        dag_density: t.dag_density.clone(),
+        fan_in_max: t.fan_in_max.clone(),
+        fan_in_mean: t.fan_in_mean.clone(),
+        fan_out_max: t.fan_out_max.clone(),
+        fan_out_mean: t.fan_out_mean.clone(),
+    };
     let bucketed =
         BucketedMetrics::from_metrics(&computed.structural, &thresholds);
 
@@ -201,151 +262,44 @@ fn prune_disabled_metrics(
     }
 }
 
-/// Insert a metric entry for a symbol if found in the distribution.
-fn insert_symbol_metric(
-    metrics: &mut serde_json::Map<String, serde_json::Value>,
-    name: &str,
-    distribution: &[(String, usize)],
-    thresholds: &config::MetricThresholds,
-    symbol_id: &str,
-    direction: mdlr_metrics::SortDirection,
-) {
-    if let Some((_, value)) = distribution.iter().find(|(n, _)| n == symbol_id)
-    {
-        let bucket = match direction {
-            mdlr_metrics::SortDirection::Desc => {
-                thresholds.evaluate(*value as f64)
-            }
-            mdlr_metrics::SortDirection::Asc => {
-                thresholds.evaluate_asc(*value as f64)
-            }
-        };
-        metrics.insert(
-            name.to_string(),
-            serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
-        );
-    }
+/// Look up a symbol's value in a distribution.
+fn find_value(dist: &[(String, usize)], symbol_id: &str) -> Option<usize> {
+    dist.iter().find(|(n, _)| n == symbol_id).map(|(_, v)| *v)
 }
 
-/// Build JSON output for a specific symbol
+/// Build JSON output for a specific symbol. Reuses the [`MetricSpecs`]
+/// registry so the symbol view and the text rows read the same
+/// distributions and thresholds. Unlike text rows, every metric with a
+/// value for the symbol is shown (no boring/hub filtering).
 fn build_symbol_json(
     computed: &ComputedMetrics,
     config: &config::Config,
     symbol_id: &str,
 ) -> serde_json::Value {
+    let bundle = metrics_bundle(computed);
+    let specs = MetricSpecs::new(&bundle, config);
     let mut metrics = serde_json::Map::new();
-    let t = &config.thresholds;
-
-    use mdlr_metrics::SortDirection::{Asc, Desc};
-    let mut metric_sources: Vec<(
-        &str,
-        &[(String, usize)],
-        &config::MetricThresholds,
-        mdlr_metrics::SortDirection,
-    )> = vec![
-        (
-            "fan_in",
-            &computed.structural.fan_in.distribution,
-            &t.fan_in_max,
-            Desc,
-        ),
-        (
-            "fan_out",
-            &computed.structural.fan_out.distribution,
-            &t.fan_out_max,
-            Desc,
-        ),
-        ("params", &computed.complexity.params.distribution, &t.params, Desc),
-        (
-            "cyclomatic",
-            &computed.complexity.cyclomatic.distribution,
-            &t.cyclomatic,
-            Desc,
-        ),
-        (
-            "cognitive",
-            &computed.complexity.cognitive.distribution,
-            &t.cognitive,
-            Desc,
-        ),
-        (
-            "max_scope",
-            &computed.complexity.max_scope.distribution,
-            &t.max_scope,
-            Desc,
-        ),
-        (
-            "methods_per_struct",
-            &computed.struct_metrics.methods_per_struct.distribution,
-            &t.methods_per_struct,
-            Desc,
-        ),
-        ("lcom", &computed.struct_metrics.lcom.distribution, &t.lcom, Desc),
-        (
-            "duplication_pct",
-            &computed.duplication.distribution,
-            &t.duplication_pct,
-            Desc,
-        ),
-    ];
-    if let Some(cov) = computed.coverage.as_ref() {
-        metric_sources.push((
-            "line_cov",
-            &cov.line_cov.distribution,
-            &t.line_cov,
-            Asc,
-        ));
-        if cov.has_branches {
-            metric_sources.push((
-                "uncov_branches",
-                &cov.uncov_branches.distribution,
-                &t.uncov_branches,
-                Desc,
-            ));
-        }
-    }
-
-    metric_sources.retain(|(name, ..)| !config.is_disabled(name));
-
-    for (name, distribution, thresholds, direction) in &metric_sources {
-        insert_symbol_metric(
-            &mut metrics,
-            name,
-            distribution,
-            thresholds,
-            symbol_id,
-            *direction,
-        );
-    }
-
-    // function_size is two-sided: the low side applies only when the unit
-    // has exactly one visible caller (fan_in == 1); otherwise only the high
-    // side is evaluated.
-    if !config.is_disabled("function_size")
-        && let Some((_, value)) = computed
-            .complexity
-            .size
-            .distribution
-            .iter()
-            .find(|(n, _)| n == symbol_id)
-    {
-        let fan_in = computed
-            .structural
-            .fan_in
-            .distribution
-            .iter()
-            .find(|(n, _)| n == symbol_id)
-            .map(|(_, v)| *v)
-            .unwrap_or(0);
-        let bucket = if fan_in == 1 {
-            t.function_size.evaluate(*value as f64)
-        } else {
-            t.function_size.high.evaluate(*value as f64)
-        };
+    let mut insert = |name: &str, value: usize, bucket: config::Bucket| {
         metrics.insert(
-            "function_size".to_string(),
+            name.to_string(),
             serde_json::json!({ "value": value, "bucket": bucket.to_string() }),
         );
+    };
+
+    for spec in &specs.int_specs {
+        if let Some(value) = find_value(spec.distribution, symbol_id) {
+            insert(spec.name, value, spec.bucket_for(value));
+        }
+    }
+    if let Some(spec) = &specs.fan_in_spec
+        && let Some(value) = find_value(spec.distribution, symbol_id)
+    {
+        insert("fan_in", value, spec.thresholds.evaluate(value as f64));
+    }
+    if let Some(spec) = &specs.function_size_spec
+        && let Some(value) = find_value(spec.distribution, symbol_id)
+    {
+        insert("function_size", value, spec.bucket_for(symbol_id, value));
     }
 
     let is_partial =
