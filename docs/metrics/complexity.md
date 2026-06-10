@@ -8,13 +8,19 @@ Complexity metrics measure how complex individual functions are, helping identif
 
 Lines of code per function, computed from the span (start line to end line).
 
+`function_size` is a **two-sided metric**: both extremes are bad. Too big is hard to understand and test; too small (a 1-2 line pass-through) adds indirection without abstraction. A value is evaluated against two threshold sets — `high` (higher-is-worse) and `low` (lower-is-worse) — and gets the worse of the two buckets.
+
+The low side applies **only to functions with exactly one visible caller** (`fan_in == 1`) — the case where "inline it into the caller" is well-defined. Functions with unknown callers (`fan_in == 0`: trait dispatch, public API, entry points) or multiple callers (shared helpers, accessors) are exempt from the low side and evaluated against the high side only.
+
 | Statistic | Description |
 |-----------|-------------|
 | max | Largest function in lines |
 | mean | Average function size |
 | p90 | 90th percentile size |
 
-**Default thresholds:**
+The aggregate statistics describe the high tail; tiny flagged functions surface as individual rows.
+
+**Default thresholds (high side, always applies):**
 
 | Bucket | Threshold |
 |--------|-----------|
@@ -23,6 +29,17 @@ Lines of code per function, computed from the span (start line to end line).
 | Fair | < 100 lines |
 | Poor | < 200 lines |
 | Critical | >= 200 lines |
+
+**Default thresholds (low side, only when `fan_in == 1`):**
+
+| Bucket | Threshold |
+|--------|-----------|
+| Excellent | >= 5 lines |
+| Good | 4 lines |
+| Fair | 3 lines |
+| Poor | <= 2 lines |
+
+Critical is unreachable on the low side by default, so a 1-liner never outranks a god function in worst-first ordering.
 
 ### Parameter Count
 
@@ -112,6 +129,7 @@ Largest Functions:
 ## Interpretation
 
 - **High function size**: Consider breaking into smaller, focused functions
+- **Low function size** (flagged only when `fan_in == 1`): A single-caller pass-through — consider inlining it into its caller. Never inline trait-required methods, public API accessors, or shared helpers; those are already exempt from the flag
 - **Many parameters**: Consider using a struct/builder pattern
 - **High cyclomatic complexity**: Consider extracting conditional logic into separate functions
 - **High max scope**: Extract the oversized block into a separate function
@@ -120,11 +138,20 @@ Largest Functions:
 
 ```yaml
 thresholds:
+  # Two-sided: low and high blocks. The old flat form
+  # (excellent/good/fair/poor) is still accepted and
+  # configures the high side.
   function_size:
-    excellent: 20
-    good: 50
-    fair: 100
-    poor: 200
+    low:            # lower-is-worse; only applies when fan_in == 1
+      excellent: 5  # >= 5 lines is fine
+      good: 4
+      fair: 3
+      poor: 1       # <= 2 lines is poor; critical unreachable
+    high:           # higher-is-worse
+      excellent: 20
+      good: 50
+      fair: 100
+      poor: 200
 
   params:
     excellent: 3

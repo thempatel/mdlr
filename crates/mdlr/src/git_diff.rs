@@ -31,6 +31,30 @@ impl ChangedSpan {
 pub(crate) type ChangedFiles = HashMap<PathBuf, ChangedSpan>;
 
 /// Check if the current HEAD is on the base branch (main or master).
+/// The repo state that drives diff-mode scope precedence.
+pub(crate) enum WorkingState {
+    /// Source changes vs HEAD (staged, unstaged, or untracked).
+    Dirty(ChangedFiles),
+    /// Clean tree, sitting on main/master.
+    OnBase,
+    /// Clean tree on a branch: changes vs the merge-base with `base`.
+    Branch { base: String, files: ChangedFiles },
+}
+
+/// Classify the working tree for scope selection: dirty source edits win,
+/// then a clean tree is either on the base branch or carries a branch diff.
+pub(crate) fn classify_working_state(root: &Path) -> Result<WorkingState> {
+    let dirty = working_tree_changes(root)?;
+    if dirty.keys().any(|p| crate::extraction::is_source_path(p)) {
+        return Ok(WorkingState::Dirty(dirty));
+    }
+    if is_on_base_branch(root) {
+        return Ok(WorkingState::OnBase);
+    }
+    let (base, files) = branch_changes(root)?;
+    Ok(WorkingState::Branch { base, files })
+}
+
 pub(crate) fn is_on_base_branch(root: &Path) -> bool {
     let output = process::Command::new("git")
         .args(["symbolic-ref", "--short", "HEAD"])

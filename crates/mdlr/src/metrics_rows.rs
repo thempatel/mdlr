@@ -1,7 +1,7 @@
 //! Metric row collection for CLI output.
 
 use crate::cache::Ignores;
-use crate::config::{Bucket, Config, MetricThresholds};
+use crate::config::{Bucket, Config, MetricThresholds, TwoSidedThresholds};
 use mdlr_cpd::DuplicationMetrics;
 use mdlr_metrics::{
     ComplexityMetrics, CoverageMetrics, FileLocMetrics, HubInfo,
@@ -49,16 +49,34 @@ pub struct MetricsBundle<'a> {
     pub coverage: Option<&'a CoverageMetrics>,
 }
 
+/// Walk a distribution, optionally restricted to one symbol, pushing
+/// whatever rows `score` produces. The single collection loop shared by
+/// every spec type and both display modes (global and symbol-filtered).
+fn collect_rows(
+    distribution: &[(String, usize)],
+    filter: Option<&str>,
+    rows: &mut Vec<ScoredRow>,
+    score: impl Fn(&str, usize) -> Option<ScoredRow>,
+) {
+    for (name, value) in distribution {
+        if filter.is_none_or(|f| name == f)
+            && let Some(row) = score(name, *value)
+        {
+            rows.push(row);
+        }
+    }
+}
+
 /// Specification for collecting an integer metric.
 ///
 /// `direction` controls both the threshold evaluation (which end of the
 /// range is "worse") and which side of `boring_threshold` to keep:
 /// - `Desc`: keep entries with `value > boring_threshold` (boring = small).
 /// - `Asc`:  keep entries with `value < boring_threshold` (boring = large).
-struct IntMetricSpec<'a> {
-    name: &'static str,
-    distribution: &'a [(String, usize)],
-    thresholds: &'a MetricThresholds,
+pub(crate) struct IntMetricSpec<'a> {
+    pub(crate) name: &'static str,
+    pub(crate) distribution: &'a [(String, usize)],
+    thresholds: MetricThresholds,
     boring_threshold: usize,
     direction: SortDirection,
 }
@@ -71,7 +89,7 @@ impl IntMetricSpec<'_> {
         }
     }
 
-    fn bucket_for(&self, value: usize) -> Bucket {
+    pub(crate) fn bucket_for(&self, value: usize) -> Bucket {
         match self.direction {
             SortDirection::Desc => self.thresholds.evaluate(value as f64),
             SortDirection::Asc => self.thresholds.evaluate_asc(value as f64),
@@ -85,281 +103,207 @@ impl IntMetricSpec<'_> {
         }
     }
 
-    /// Collect all entries (for global sorting mode)
-    fn collect_all(&self, rows: &mut Vec<ScoredRow>) {
-        for (name, value) in self.distribution {
-            if self.is_interesting(*value) {
-                let bucket = self.bucket_for(*value);
-                rows.push(ScoredRow {
-                    metric_name: self.name.to_string(),
-                    symbol: name.clone(),
-                    value: self.format_value(*value),
-                    bucket,
-                });
-            }
+    fn score(&self, symbol: &str, value: usize) -> Option<ScoredRow> {
+        self.is_interesting(value).then(|| ScoredRow {
+            metric_name: self.name.to_string(),
+            symbol: symbol.to_string(),
+            value: self.format_value(value),
+            bucket: self.bucket_for(value),
+        })
+    }
+}
+
+/// Specification for collecting `function_size`, the only two-sided metric:
+/// both extremes are bad. The high side always applies; the low side applies
+/// only to units with exactly one visible caller (`fan_in == 1`) — the
+/// single-caller pass-through case where "inline into the caller" is
+/// well-defined. `fan_in == 0` (callers unknown to the graph: trait dispatch,
+/// pub API, entry points) and `fan_in >= 2` (shared helpers) are exempt and
+/// evaluated against the high side only.
+pub(crate) struct TwoSidedSizeSpec<'a> {
+    pub(crate) distribution: &'a [(String, usize)],
+    thresholds: &'a TwoSidedThresholds,
+    fan_in: HashMap<&'a str, usize>,
+}
+
+impl<'a> TwoSidedSizeSpec<'a> {
+    fn new(
+        m: &'a MetricsBundle,
+        thresholds: &'a TwoSidedThresholds,
+    ) -> TwoSidedSizeSpec<'a> {
+        TwoSidedSizeSpec {
+            distribution: &m.complexity.size.distribution,
+            thresholds,
+            fan_in: m
+                .structural
+                .fan_in
+                .distribution
+                .iter()
+                .map(|(id, v)| (id.as_str(), *v))
+                .collect(),
         }
     }
 
-    /// Collect with per-metric limit (for symbol filter mode)
-    fn collect_filtered(
-        &self,
-        rows: &mut Vec<MetricRow>,
-        symbol_filter: &str,
-    ) {
-        for (name, value) in self.distribution.iter() {
-            if name == symbol_filter && self.is_interesting(*value) {
-                let bucket = self.bucket_for(*value);
-                rows.push((
-                    self.name.to_string(),
-                    name.clone(),
-                    self.format_value(*value),
-                    bucket.to_string(),
-                ));
-            }
+    fn low_side_applies(&self, symbol: &str) -> bool {
+        self.fan_in.get(symbol).copied().unwrap_or(0) == 1
+    }
+
+    pub(crate) fn bucket_for(&self, symbol: &str, value: usize) -> Bucket {
+        if self.low_side_applies(symbol) {
+            self.thresholds.evaluate(value as f64)
+        } else {
+            self.thresholds.high.evaluate(value as f64)
         }
+    }
+
+    fn score(&self, symbol: &str, value: usize) -> Option<ScoredRow> {
+        // Boring = 1-liners that are exempt from the low side (the high-side
+        // `value > 1` rule that applied before the metric became two-sided).
+        if value <= 1 && !self.low_side_applies(symbol) {
+            return None;
+        }
+        Some(ScoredRow {
+            metric_name: "function_size".to_string(),
+            symbol: symbol.to_string(),
+            value: value.to_string(),
+            bucket: self.bucket_for(symbol, value),
+        })
     }
 }
 
 /// Specification for collecting fan_in metric with hub filtering
 /// Only includes units that are hubs (high fan_in AND high fan_out)
-struct HubFilteredFanInSpec<'a> {
-    distribution: &'a [(String, usize)],
-    thresholds: &'a MetricThresholds,
+pub(crate) struct HubFilteredFanInSpec<'a> {
+    pub(crate) distribution: &'a [(String, usize)],
+    pub(crate) thresholds: MetricThresholds,
     hubs: &'a HashMap<String, HubInfo>,
 }
 
 impl HubFilteredFanInSpec<'_> {
-    /// Collect only hub entries (for global sorting mode)
-    fn collect_all(&self, rows: &mut Vec<ScoredRow>) {
-        for (name, value) in self.distribution {
-            // Only include if this unit is a hub
-            if self.hubs.contains_key(name) {
-                let bucket = self.thresholds.evaluate(*value as f64);
-                rows.push(ScoredRow {
-                    metric_name: "fan_in".to_string(),
-                    symbol: name.clone(),
-                    value: value.to_string(),
-                    bucket,
-                });
-            }
-        }
-    }
-
-    /// Collect with per-metric limit (for symbol filter mode)
-    /// In symbol filter mode, always show the value regardless of hub status
-    fn collect_filtered(
+    /// In global mode only hub units are shown (`require_hub`); in symbol
+    /// filter mode the value is always shown regardless of hub status.
+    fn score(
         &self,
-        rows: &mut Vec<MetricRow>,
-        symbol_filter: &str,
-    ) {
-        for (name, value) in self.distribution.iter() {
-            if name == symbol_filter {
-                let bucket = self.thresholds.evaluate(*value as f64);
-                rows.push((
-                    "fan_in".to_string(),
-                    name.clone(),
-                    value.to_string(),
-                    bucket.to_string(),
-                ));
-            }
+        symbol: &str,
+        value: usize,
+        require_hub: bool,
+    ) -> Option<ScoredRow> {
+        if require_hub && !self.hubs.contains_key(symbol) {
+            return None;
         }
+        Some(ScoredRow {
+            metric_name: "fan_in".to_string(),
+            symbol: symbol.to_string(),
+            value: value.to_string(),
+            bucket: self.thresholds.evaluate(value as f64),
+        })
     }
 }
 
-/// Specification for collecting a float metric
-struct FloatMetricSpec<'a> {
-    name: &'static str,
-    distribution: &'a [(String, f64)],
-    thresholds: &'a MetricThresholds,
-    min_value: f64,
-}
-
-impl FloatMetricSpec<'_> {
-    /// Collect all entries (for global sorting mode)
-    fn collect_all(&self, rows: &mut Vec<ScoredRow>) {
-        for (name, value) in self.distribution {
-            if *value > self.min_value {
-                let bucket = self.thresholds.evaluate(*value);
-                rows.push(ScoredRow {
-                    metric_name: self.name.to_string(),
-                    symbol: name.clone(),
-                    value: format!("{:.2}", value),
-                    bucket,
-                });
-            }
-        }
-    }
-
-    /// Collect with per-metric limit (for symbol filter mode)
-    fn collect_filtered(
-        &self,
-        rows: &mut Vec<MetricRow>,
-        symbol_filter: &str,
-    ) {
-        for (name, value) in self.distribution.iter() {
-            if name == symbol_filter && *value > self.min_value {
-                let bucket = self.thresholds.evaluate(*value);
-                rows.push((
-                    self.name.to_string(),
-                    name.clone(),
-                    format!("{:.2}", value),
-                    bucket.to_string(),
-                ));
-            }
-        }
-    }
-}
-
-/// Bundled metric specifications for collection
-struct MetricSpecs<'a> {
-    int_specs: Vec<IntMetricSpec<'a>>,
-    fan_in_spec: Option<HubFilteredFanInSpec<'a>>,
-    lcom_spec: Option<IntMetricSpec<'a>>,
-    float_specs: Vec<FloatMetricSpec<'a>>,
-}
-
-impl<'a> MetricSpecs<'a> {
-    fn new(m: &'a MetricsBundle, config: &'a Config) -> Self {
-        let t = &config.thresholds;
-        let mut int_specs = vec![
-            IntMetricSpec {
-                name: "fan_out",
-                distribution: &m.structural.fan_out.distribution,
-                thresholds: &t.fan_out_max,
-                boring_threshold: 0,
-                direction: SortDirection::Desc,
-            },
-            IntMetricSpec {
-                name: "function_size",
-                distribution: &m.complexity.size.distribution,
-                thresholds: &t.function_size,
-                boring_threshold: 1,
-                direction: SortDirection::Desc,
-            },
-            IntMetricSpec {
-                name: "params",
-                distribution: &m.complexity.params.distribution,
-                thresholds: &t.params,
-                boring_threshold: 0,
-                direction: SortDirection::Desc,
-            },
-            IntMetricSpec {
-                name: "cyclomatic",
-                distribution: &m.complexity.cyclomatic.distribution,
-                thresholds: &t.cyclomatic,
-                boring_threshold: 1,
-                direction: SortDirection::Desc,
-            },
-            IntMetricSpec {
-                name: "cognitive",
-                distribution: &m.complexity.cognitive.distribution,
-                thresholds: &t.cognitive,
-                boring_threshold: 1,
-                direction: SortDirection::Desc,
-            },
-            IntMetricSpec {
-                name: "max_scope",
-                distribution: &m.complexity.max_scope.distribution,
-                thresholds: &t.max_scope,
-                boring_threshold: 0,
-                direction: SortDirection::Desc,
-            },
-            IntMetricSpec {
-                name: "methods_per_struct",
-                distribution: &m
-                    .struct_metrics
-                    .methods_per_struct
-                    .distribution,
-                thresholds: &t.methods_per_struct,
-                boring_threshold: 0,
-                direction: SortDirection::Desc,
-            },
-            IntMetricSpec {
-                name: "file_loc",
-                distribution: &m.file_loc.distribution,
-                thresholds: &t.file_loc,
-                boring_threshold: 0,
-                direction: SortDirection::Desc,
-            },
-            IntMetricSpec {
-                name: "duplication_pct",
-                distribution: &m.duplication.distribution,
-                thresholds: &t.duplication_pct,
-                boring_threshold: 0,
-                direction: SortDirection::Desc,
-            },
-        ];
-        if let Some(cov) = m.coverage {
-            // Skip 100% covered. Use 101 so a Unit at exactly 100% drops out
-            // but everything below stays in.
-            int_specs.push(IntMetricSpec {
-                name: "line_cov",
-                distribution: &cov.line_cov.distribution,
-                thresholds: &t.line_cov,
-                boring_threshold: 100,
-                direction: SortDirection::Asc,
-            });
-            if cov.has_branches {
-                int_specs.push(IntMetricSpec {
-                    name: "uncov_branches",
-                    distribution: &cov.uncov_branches.distribution,
-                    thresholds: &t.uncov_branches,
-                    boring_threshold: 0,
-                    direction: SortDirection::Desc,
-                });
-            }
-        }
-        // Disabling is output-control: drop specs for disabled metrics so they
-        // never reach text rows or the symbol view.
-        int_specs.retain(|spec| !config.is_disabled(spec.name));
-
-        let fan_in_spec =
-            (!config.is_disabled("fan_in")).then(|| HubFilteredFanInSpec {
-                distribution: &m.structural.fan_in.distribution,
-                thresholds: &t.fan_in_max,
-                hubs: &m.structural.hubs,
-            });
-        let lcom_spec = (!config.is_disabled("lcom")).then(|| IntMetricSpec {
-            name: "lcom",
-            distribution: &m.struct_metrics.lcom.distribution,
-            thresholds: &t.lcom,
+/// The line_cov / uncov_branches specs, present only when `--cov` was
+/// passed. Skip 100% covered: boring 100 with Asc keeps everything below
+/// 100% in, so a unit at exactly 100% drops out.
+fn coverage_specs<'a>(
+    cov: &'a CoverageMetrics,
+    th: &HashMap<String, MetricThresholds>,
+) -> Vec<IntMetricSpec<'a>> {
+    let mut specs = vec![IntMetricSpec {
+        name: "line_cov",
+        distribution: &cov.line_cov.distribution,
+        thresholds: th["line_cov"].clone(),
+        boring_threshold: 100,
+        direction: SortDirection::Asc,
+    }];
+    if cov.has_branches {
+        specs.push(IntMetricSpec {
+            name: "uncov_branches",
+            distribution: &cov.uncov_branches.distribution,
+            thresholds: th["uncov_branches"].clone(),
             boring_threshold: 0,
             direction: SortDirection::Desc,
         });
+    }
+    specs
+}
 
-        MetricSpecs { int_specs, fan_in_spec, lcom_spec, float_specs: vec![] }
+/// Bundled metric specifications for collection. The single registry of
+/// which distributions and thresholds each metric reads, shared by the text
+/// rows and the symbol JSON view.
+pub(crate) struct MetricSpecs<'a> {
+    pub(crate) int_specs: Vec<IntMetricSpec<'a>>,
+    pub(crate) function_size_spec: Option<TwoSidedSizeSpec<'a>>,
+    pub(crate) fan_in_spec: Option<HubFilteredFanInSpec<'a>>,
+}
+
+impl<'a> MetricSpecs<'a> {
+    pub(crate) fn new(m: &'a MetricsBundle, config: &'a Config) -> Self {
+        // Thresholds resolve by metric name (config serde keys).
+        let th = config.thresholds.by_name();
+        let c = m.complexity;
+        let spec = |name: &'static str,
+                    distribution: &'a [(String, usize)],
+                    boring_threshold: usize| {
+            IntMetricSpec {
+                name,
+                distribution,
+                thresholds: th[name].clone(),
+                boring_threshold,
+                direction: SortDirection::Desc,
+            }
+        };
+        let mut int_specs = vec![
+            spec("fan_out", &m.structural.fan_out.distribution, 0),
+            spec("params", &c.params.distribution, 0),
+            spec("cyclomatic", &c.cyclomatic.distribution, 1),
+            spec("cognitive", &c.cognitive.distribution, 1),
+            spec("max_scope", &c.max_scope.distribution, 0),
+            spec(
+                "methods_per_struct",
+                &m.struct_metrics.methods_per_struct.distribution,
+                0,
+            ),
+            spec("file_loc", &m.file_loc.distribution, 0),
+            spec("duplication_pct", &m.duplication.distribution, 0),
+            spec("lcom", &m.struct_metrics.lcom.distribution, 0),
+        ];
+        if let Some(cov) = m.coverage {
+            int_specs.extend(coverage_specs(cov, &th));
+        }
+        // Disabling is output-control: drop specs so no view shows them.
+        int_specs.retain(|spec| !config.is_disabled(spec.name));
+
+        let function_size_spec =
+            (!config.is_disabled("function_size")).then(|| {
+                TwoSidedSizeSpec::new(m, &config.thresholds.function_size)
+            });
+        let fan_in_spec =
+            (!config.is_disabled("fan_in")).then(|| HubFilteredFanInSpec {
+                distribution: &m.structural.fan_in.distribution,
+                thresholds: th["fan_in"].clone(),
+                hubs: &m.structural.hubs,
+            });
+
+        MetricSpecs { int_specs, function_size_spec, fan_in_spec }
     }
 
-    fn collect_filtered(&self, filter: &str) -> Vec<MetricRow> {
+    /// Collect rows from every spec. `filter` restricts to one symbol
+    /// (symbol view); `None` collects everything (global sorting mode).
+    fn collect(&self, filter: Option<&str>) -> Vec<ScoredRow> {
         let mut rows = Vec::new();
         for spec in &self.int_specs {
-            spec.collect_filtered(&mut rows, filter);
+            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
+                spec.score(s, v)
+            });
         }
-        if let Some(fan_in_spec) = &self.fan_in_spec {
-            fan_in_spec.collect_filtered(&mut rows, filter);
+        if let Some(spec) = &self.function_size_spec {
+            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
+                spec.score(s, v)
+            });
         }
-        if let Some(lcom_spec) = &self.lcom_spec {
-            lcom_spec.collect_filtered(&mut rows, filter);
-        }
-        for spec in &self.float_specs {
-            spec.collect_filtered(&mut rows, filter);
-        }
-        rows
-    }
-
-    fn collect_all_scored(&self) -> Vec<ScoredRow> {
-        let mut rows = Vec::new();
-        for spec in &self.int_specs {
-            spec.collect_all(&mut rows);
-        }
-        if let Some(fan_in_spec) = &self.fan_in_spec {
-            fan_in_spec.collect_all(&mut rows);
-        }
-        if let Some(lcom_spec) = &self.lcom_spec {
-            lcom_spec.collect_all(&mut rows);
-        }
-        for spec in &self.float_specs {
-            spec.collect_all(&mut rows);
+        if let Some(spec) = &self.fan_in_spec {
+            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
+                spec.score(s, v, filter.is_none())
+            });
         }
         rows
     }
@@ -408,34 +352,92 @@ fn sort_and_group(mut scored_rows: Vec<ScoredRow>, k: i32) -> Vec<MetricRow> {
     rows
 }
 
+/// Which rows `collect_metric_rows` returns.
+pub enum RowSelection<'a> {
+    /// One symbol's rows, unsorted and unlimited.
+    Symbol(&'a str),
+    /// Top-k rows across all metrics, prioritized by severity (critical
+    /// first, then poor, fair, good, excellent) and grouped by metric for
+    /// display. Negative k collects all rows.
+    Top(i32),
+}
+
 /// Collect metric rows for text output.
-///
-/// The `k` parameter limits how many rows are collected globally:
-/// - If `k < 0`, all rows are collected
-/// - If `k >= 0`, at most `k` rows are collected total, prioritizing by severity
-///
-/// Rows are selected by severity (critical first, then poor, fair, good, excellent)
-/// across all metric types, then grouped by metric type for display.
 pub fn collect_metric_rows(
     metrics: &MetricsBundle,
     config: &Config,
-    k: i32,
-    symbol_filter: Option<&str>,
+    selection: RowSelection,
     ignores: &Ignores,
 ) -> Vec<MetricRow> {
     let specs = MetricSpecs::new(metrics, config);
+    let filter = match selection {
+        RowSelection::Symbol(s) => Some(s),
+        RowSelection::Top(_) => None,
+    };
 
-    if let Some(filter) = symbol_filter {
-        let mut rows = specs.collect_filtered(filter);
-        rows.retain(|(metric, symbol, _, _)| {
-            !ignores.is_ignored(symbol, metric)
-        });
-        return rows;
+    let mut rows = specs.collect(filter);
+    rows.retain(|row| !ignores.is_ignored(&row.symbol, &row.metric_name));
+
+    match selection {
+        RowSelection::Symbol(_) => {
+            rows.into_iter().map(ScoredRow::into_row).collect()
+        }
+        RowSelection::Top(k) => sort_and_group(rows, k),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec_with<'a>(
+        distribution: &'a [(String, usize)],
+        thresholds: &'a TwoSidedThresholds,
+        fan_in: &[(&'a str, usize)],
+    ) -> TwoSidedSizeSpec<'a> {
+        TwoSidedSizeSpec {
+            distribution,
+            thresholds,
+            fan_in: fan_in.iter().copied().collect(),
+        }
     }
 
-    let mut scored_rows = specs.collect_all_scored();
-    scored_rows
-        .retain(|row| !ignores.is_ignored(&row.symbol, &row.metric_name));
+    #[test]
+    fn low_side_flags_only_single_caller_units() {
+        let thresholds = Config::default().thresholds.function_size;
+        let distribution = vec![
+            ("pass_through".to_string(), 1),
+            ("trait_impl".to_string(), 1),
+            ("shared_getter".to_string(), 1),
+            ("small_single_caller".to_string(), 3),
+            ("big".to_string(), 250),
+        ];
+        let spec = spec_with(
+            &distribution,
+            &thresholds,
+            &[
+                ("pass_through", 1),
+                // trait_impl absent from fan_in map -> fan_in 0, exempt
+                ("shared_getter", 30),
+                ("small_single_caller", 1),
+                ("big", 1),
+            ],
+        );
 
-    sort_and_group(scored_rows, k)
+        let mut rows = Vec::new();
+        collect_rows(spec.distribution, None, &mut rows, |s, v| {
+            spec.score(s, v)
+        });
+        let by_symbol: HashMap<&str, Bucket> =
+            rows.iter().map(|r| (r.symbol.as_str(), r.bucket)).collect();
+
+        // fan_in == 1: low side applies.
+        assert_eq!(by_symbol["pass_through"], Bucket::Poor);
+        assert_eq!(by_symbol["small_single_caller"], Bucket::Fair);
+        // Exempt 1-liners are boring and produce no row at all.
+        assert!(!by_symbol.contains_key("trait_impl"));
+        assert!(!by_symbol.contains_key("shared_getter"));
+        // The high side is unaffected by the gate.
+        assert_eq!(by_symbol["big"], Bucket::Critical);
+    }
 }

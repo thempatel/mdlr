@@ -234,6 +234,18 @@ pub fn extract_py(store: &CacheStore, generation_id: u64) -> Result<bool> {
     Ok(success)
 }
 
+/// Load both cache kinds (FileCacheEntry JSON + .tokens binaries) from a
+/// cache directory.
+pub fn load_cache_dir(
+    dir: &Path,
+) -> Result<(Vec<FileCacheEntry>, Vec<mdlr_cpd::FileTokens>)> {
+    let mut entries = Vec::new();
+    load_entries_from_dir(dir, &mut entries)?;
+    let mut tokens = Vec::new();
+    load_tokens_from_dir(dir, &mut tokens)?;
+    Ok((entries, tokens))
+}
+
 /// Recursively load FileCacheEntry JSON files from a directory.
 #[tracing::instrument(name = "load_cache", skip_all)]
 pub fn load_entries_from_dir(

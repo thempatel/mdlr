@@ -120,6 +120,8 @@ Defaults are tuned for typical codebases. If you want stricter or looser thresho
 ```yaml
 thresholds:
   # Stricter function-size budget than the default 20/50/100/200
+  # (flat form configures the high side; function_size is two-sided,
+  # see docs/metrics/complexity.md)
   function_size:
     excellent: 15
     good: 40
@@ -134,7 +136,7 @@ thresholds:
     poor: 40
 ```
 
-Each field is the upper bound of its bucket — a value below `excellent` is "excellent", at or above `poor` is "critical". Lower-is-worse metrics like `line_cov` invert this (the field is the *low* boundary of each bucket).
+Each field is the upper bound of its bucket — a value below `excellent` is "excellent", at or above `poor` is "critical". Lower-is-worse metrics like `line_cov` invert this (the field is the *low* boundary of each bucket). `function_size` is two-sided — too small is also flagged (for single-caller functions); it takes `low:`/`high:` blocks to configure both sides.
 
 Metrics can be turned off via a top level `disabled_metrics` stanza.
 

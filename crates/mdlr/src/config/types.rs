@@ -1,27 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Quality bucket for metric values
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Bucket {
-    Excellent,
-    Good,
-    Fair,
-    Poor,
-    Critical,
-}
-
-impl std::fmt::Display for Bucket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Bucket::Excellent => write!(f, "excellent"),
-            Bucket::Good => write!(f, "good"),
-            Bucket::Fair => write!(f, "fair"),
-            Bucket::Poor => write!(f, "poor"),
-            Bucket::Critical => write!(f, "critical"),
-        }
-    }
-}
+/// Canonical bucket and per-metric threshold types live in `mdlr-metrics`;
+/// re-exported here so config consumers have one import path.
+pub use mdlr_metrics::{Bucket, MetricThresholds};
 
 /// Display mode for metric output
 #[derive(
@@ -35,47 +16,57 @@ pub enum DisplayMode {
     Value,
 }
 
-/// Threshold configuration for a single metric
+/// Thresholds for a two-sided metric — one where both extremes are bad.
+/// `low` is evaluated lower-is-worse, `high` higher-is-worse; a value gets
+/// the worse of the two buckets. The ideal range sits between
+/// `low.excellent` and `high.excellent`.
+///
+/// Deserializes from either the split `{low: {...}, high: {...}}` form or
+/// the old flat `{excellent, good, fair, poor}` form, which is treated as
+/// the high side with the default low side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MetricThresholds {
-    pub excellent: f64,
-    pub good: f64,
-    pub fair: f64,
-    pub poor: f64,
+#[serde(from = "TwoSidedRepr")]
+pub struct TwoSidedThresholds {
+    pub low: MetricThresholds,
+    pub high: MetricThresholds,
 }
 
-impl MetricThresholds {
-    /// Evaluate a higher-is-worse metric. Field names match the bucket the
-    /// value falls into when below that threshold.
-    pub fn evaluate(&self, value: f64) -> Bucket {
-        if value < self.excellent {
-            Bucket::Excellent
-        } else if value < self.good {
-            Bucket::Good
-        } else if value < self.fair {
-            Bucket::Fair
-        } else if value < self.poor {
-            Bucket::Poor
-        } else {
-            Bucket::Critical
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TwoSidedRepr {
+    Flat(MetricThresholds),
+    Split(SplitRepr),
+}
+
+/// `deny_unknown_fields` keeps a malformed flat form (e.g. a lone
+/// `excellent: 20`) from silently matching as an empty split form.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SplitRepr {
+    low: Option<MetricThresholds>,
+    high: Option<MetricThresholds>,
+}
+
+impl From<TwoSidedRepr> for TwoSidedThresholds {
+    fn from(repr: TwoSidedRepr) -> Self {
+        let d = DEFAULT_FUNCTION_SIZE;
+        match repr {
+            TwoSidedRepr::Flat(high) => Self { low: d.low, high },
+            TwoSidedRepr::Split(s) => Self {
+                low: s.low.unwrap_or(d.low),
+                high: s.high.unwrap_or(d.high),
+            },
         }
     }
+}
 
-    /// Evaluate a lower-is-worse metric (e.g. coverage %). Fields name the
-    /// LOW boundary of each bucket; a value at-or-above the field is in
-    /// that bucket or better.
-    pub fn evaluate_asc(&self, value: f64) -> Bucket {
-        if value >= self.excellent {
-            Bucket::Excellent
-        } else if value >= self.good {
-            Bucket::Good
-        } else if value >= self.fair {
-            Bucket::Fair
-        } else if value >= self.poor {
-            Bucket::Poor
-        } else {
-            Bucket::Critical
-        }
+impl TwoSidedThresholds {
+    /// Evaluate against both sides, taking the worse bucket. Callers that
+    /// exempt a unit from the low side use `self.high.evaluate()` directly.
+    pub fn evaluate(&self, value: f64) -> Bucket {
+        let low = self.low.evaluate_asc(value);
+        let high = self.high.evaluate(value);
+        if (low as u8) > (high as u8) { low } else { high }
     }
 }
 
@@ -103,7 +94,7 @@ pub struct ThresholdsConfig {
     pub fan_in_mean: MetricThresholds,
     pub fan_out_max: MetricThresholds,
     pub fan_out_mean: MetricThresholds,
-    pub function_size: MetricThresholds,
+    pub function_size: TwoSidedThresholds,
     pub params: MetricThresholds,
     pub cyclomatic: MetricThresholds,
     pub cognitive: MetricThresholds,
@@ -116,133 +107,84 @@ pub struct ThresholdsConfig {
     pub uncov_branches: MetricThresholds,
 }
 
-/// Default threshold values as constants
-mod defaults {
-    use super::MetricThresholds;
-
-    pub const DAG_DENSITY: MetricThresholds =
-        MetricThresholds { excellent: 0.5, good: 1.0, fair: 1.5, poor: 2.0 };
-
-    pub const FAN_IN_MAX: MetricThresholds =
-        MetricThresholds { excellent: 3.0, good: 5.0, fair: 10.0, poor: 15.0 };
-
-    pub const FAN_IN_MEAN: MetricThresholds =
-        MetricThresholds { excellent: 0.5, good: 1.0, fair: 2.0, poor: 3.0 };
-
-    pub const FAN_OUT_MAX: MetricThresholds =
-        MetricThresholds { excellent: 3.0, good: 5.0, fair: 8.0, poor: 12.0 };
-
-    pub const FAN_OUT_MEAN: MetricThresholds =
-        MetricThresholds { excellent: 0.5, good: 1.0, fair: 2.0, poor: 3.0 };
-
-    pub const FUNCTION_SIZE: MetricThresholds = MetricThresholds {
-        excellent: 20.0,
-        good: 50.0,
-        fair: 100.0,
-        poor: 200.0,
-    };
-
-    pub const PARAMS: MetricThresholds =
-        MetricThresholds { excellent: 3.0, good: 5.0, fair: 7.0, poor: 10.0 };
-
-    pub const CYCLOMATIC: MetricThresholds = MetricThresholds {
-        excellent: 5.0,
-        good: 10.0,
-        fair: 20.0,
-        poor: 30.0,
-    };
-
-    pub const COGNITIVE: MetricThresholds = MetricThresholds {
-        excellent: 5.0,
-        good: 10.0,
-        fair: 15.0,
-        poor: 25.0,
-    };
-
-    pub const METHODS_PER_STRUCT: MetricThresholds = MetricThresholds {
-        excellent: 5.0,
-        good: 10.0,
-        fair: 15.0,
-        poor: 25.0,
-    };
-
-    // LCOM4 = connected components. 1 = cohesive, 2+ = should split
-    pub const LCOM: MetricThresholds =
-        MetricThresholds { excellent: 2.0, good: 3.0, fair: 4.0, poor: 5.0 };
-
-    pub const FILE_LOC: MetricThresholds = MetricThresholds {
-        excellent: 200.0,
-        good: 400.0,
-        fair: 600.0,
-        poor: 1000.0,
-    };
-
-    pub const MAX_SCOPE: MetricThresholds = MetricThresholds {
-        excellent: 15.0,
-        good: 30.0,
-        fair: 50.0,
-        poor: 100.0,
-    };
-
-    pub const DUPLICATION_PCT: MetricThresholds =
-        MetricThresholds { excellent: 3.0, good: 5.0, fair: 10.0, poor: 20.0 };
-
-    // Lower-is-worse: fields are the LOW boundary of each bucket.
-    // value >= excellent (90) → excellent; value < poor (60) → critical.
-    pub const LINE_COV: MetricThresholds = MetricThresholds {
-        excellent: 90.0,
-        good: 80.0,
-        fair: 70.0,
-        poor: 60.0,
-    };
-
-    pub const UNCOV_BRANCHES: MetricThresholds =
-        MetricThresholds { excellent: 1.0, good: 3.0, fair: 6.0, poor: 10.0 };
+/// Shorthand constructor for default threshold tables.
+const fn mt(
+    excellent: f64,
+    good: f64,
+    fair: f64,
+    poor: f64,
+) -> MetricThresholds {
+    MetricThresholds { excellent, good, fair, poor }
 }
+
+/// Default `function_size` thresholds. Two-sided: tiny functions are flagged
+/// too, but only when fan_in == 1 (single-caller pass-throughs). The low
+/// `poor: 1` keeps critical unreachable on the low side — a 1-liner never
+/// outranks a god function.
+const DEFAULT_FUNCTION_SIZE: TwoSidedThresholds = TwoSidedThresholds {
+    low: mt(5.0, 4.0, 3.0, 1.0),
+    high: mt(20.0, 50.0, 100.0, 200.0),
+};
+
+/// Default thresholds, tuned on empirical observations of healthy codebases.
+const DEFAULT_THRESHOLDS: ThresholdsConfig = ThresholdsConfig {
+    dag_density: mt(0.5, 1.0, 1.5, 2.0),
+    fan_in_max: mt(3.0, 5.0, 10.0, 15.0),
+    fan_in_mean: mt(0.5, 1.0, 2.0, 3.0),
+    fan_out_max: mt(3.0, 5.0, 8.0, 12.0),
+    fan_out_mean: mt(0.5, 1.0, 2.0, 3.0),
+    function_size: DEFAULT_FUNCTION_SIZE,
+    params: mt(3.0, 5.0, 7.0, 10.0),
+    cyclomatic: mt(5.0, 10.0, 20.0, 30.0),
+    cognitive: mt(5.0, 10.0, 15.0, 25.0),
+    methods_per_struct: mt(5.0, 10.0, 15.0, 25.0),
+    // LCOM4 = connected components. 1 = cohesive, 2+ = should split
+    lcom: mt(2.0, 3.0, 4.0, 5.0),
+    file_loc: mt(200.0, 400.0, 600.0, 1000.0),
+    max_scope: mt(15.0, 30.0, 50.0, 100.0),
+    duplication_pct: mt(3.0, 5.0, 10.0, 20.0),
+    // Lower-is-worse: fields are the LOW boundary of each bucket.
+    line_cov: mt(90.0, 80.0, 70.0, 60.0),
+    uncov_branches: mt(1.0, 3.0, 6.0, 10.0),
+};
 
 impl Default for ThresholdsConfig {
     fn default() -> Self {
-        Self {
-            dag_density: defaults::DAG_DENSITY,
-            fan_in_max: defaults::FAN_IN_MAX,
-            fan_in_mean: defaults::FAN_IN_MEAN,
-            fan_out_max: defaults::FAN_OUT_MAX,
-            fan_out_mean: defaults::FAN_OUT_MEAN,
-            function_size: defaults::FUNCTION_SIZE,
-            params: defaults::PARAMS,
-            cyclomatic: defaults::CYCLOMATIC,
-            cognitive: defaults::COGNITIVE,
-            methods_per_struct: defaults::METHODS_PER_STRUCT,
-            lcom: defaults::LCOM,
-            file_loc: defaults::FILE_LOC,
-            max_scope: defaults::MAX_SCOPE,
-            duplication_pct: defaults::DUPLICATION_PCT,
-            line_cov: defaults::LINE_COV,
-            uncov_branches: defaults::UNCOV_BRANCHES,
-        }
+        DEFAULT_THRESHOLDS
     }
 }
 
 impl ThresholdsConfig {
-    /// Get thresholds for a metric by name
-    pub fn get(&self, name: &str) -> Option<&MetricThresholds> {
-        match name {
-            "dag_density" => Some(&self.dag_density),
-            "fan_in" => Some(&self.fan_in_max),
-            "fan_out" => Some(&self.fan_out_max),
-            "function_size" => Some(&self.function_size),
-            "params" => Some(&self.params),
-            "cyclomatic" => Some(&self.cyclomatic),
-            "cognitive" => Some(&self.cognitive),
-            "methods_per_struct" => Some(&self.methods_per_struct),
-            "lcom" => Some(&self.lcom),
-            "file_loc" => Some(&self.file_loc),
-            "max_scope" => Some(&self.max_scope),
-            "duplication_pct" => Some(&self.duplication_pct),
-            "line_cov" => Some(&self.line_cov),
-            "uncov_branches" => Some(&self.uncov_branches),
-            _ => None,
-        }
+    /// Threshold tables keyed by canonical metric name, derived from the
+    /// config's own serde keys so there is no separate name→field registry
+    /// to maintain. `fan_in`/`fan_out` map to their `*_max` thresholds.
+    /// `function_size` is two-sided and not included; read
+    /// `self.function_size.low/high` directly.
+    pub fn by_name(
+        &self,
+    ) -> std::collections::HashMap<String, MetricThresholds> {
+        let serde_json::Value::Object(map) =
+            serde_json::to_value(self).expect("thresholds serialize")
+        else {
+            unreachable!("ThresholdsConfig serializes to an object");
+        };
+        map.into_iter()
+            .filter_map(|(key, v)| {
+                let name = match key.as_str() {
+                    "fan_in_max" => "fan_in".to_string(),
+                    "fan_out_max" => "fan_out".to_string(),
+                    _ => key,
+                };
+                // function_size's two-sided shape fails this parse and
+                // drops out, as intended.
+                Some((name, serde_json::from_value(v).ok()?))
+            })
+            .collect()
+    }
+
+    /// Get thresholds for a single metric by canonical name.
+    pub fn get(&self, name: &str) -> Option<MetricThresholds> {
+        self.by_name().remove(name)
     }
 }
 
@@ -344,6 +286,56 @@ mod tests {
         assert_eq!(thresholds.evaluate(1.8), Bucket::Poor);
         assert_eq!(thresholds.evaluate(2.0), Bucket::Critical);
         assert_eq!(thresholds.evaluate(5.0), Bucket::Critical);
+    }
+
+    #[test]
+    fn two_sided_evaluate_takes_worse_bucket() {
+        let t = DEFAULT_FUNCTION_SIZE;
+        // Low side: 5+ excellent, 4 good, 3 fair, <=2 poor (critical
+        // unreachable since size >= 1).
+        assert_eq!(t.evaluate(1.0), Bucket::Poor);
+        assert_eq!(t.evaluate(2.0), Bucket::Poor);
+        assert_eq!(t.evaluate(3.0), Bucket::Fair);
+        assert_eq!(t.evaluate(4.0), Bucket::Good);
+        assert_eq!(t.evaluate(5.0), Bucket::Excellent);
+        // High side unchanged.
+        assert_eq!(t.evaluate(19.0), Bucket::Excellent);
+        assert_eq!(t.evaluate(50.0), Bucket::Fair);
+        assert_eq!(t.evaluate(250.0), Bucket::Critical);
+    }
+
+    #[test]
+    fn two_sided_parses_flat_form_as_high_side() {
+        let t: TwoSidedThresholds = serde_yaml::from_str(
+            "excellent: 10\ngood: 30\nfair: 60\npoor: 120\n",
+        )
+        .unwrap();
+        assert_eq!(t.high.excellent, 10.0);
+        assert_eq!(t.high.poor, 120.0);
+        // Low side falls back to defaults.
+        assert_eq!(t.low.excellent, 5.0);
+        assert_eq!(t.low.poor, 1.0);
+    }
+
+    #[test]
+    fn two_sided_parses_split_form() {
+        let t: TwoSidedThresholds = serde_yaml::from_str(
+            "low:\n  excellent: 6\n  good: 5\n  fair: 4\n  poor: 2\nhigh:\n  excellent: 25\n  good: 60\n  fair: 120\n  poor: 240\n",
+        )
+        .unwrap();
+        assert_eq!(t.low.excellent, 6.0);
+        assert_eq!(t.high.excellent, 25.0);
+    }
+
+    #[test]
+    fn two_sided_split_form_allows_one_side() {
+        let t: TwoSidedThresholds = serde_yaml::from_str(
+            "low:\n  excellent: 6\n  good: 5\n  fair: 4\n  poor: 2\n",
+        )
+        .unwrap();
+        assert_eq!(t.low.excellent, 6.0);
+        // High side falls back to defaults.
+        assert_eq!(t.high.excellent, 20.0);
     }
 
     #[test]

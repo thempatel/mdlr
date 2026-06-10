@@ -55,11 +55,22 @@ thresholds:
     poor: 3.0
 
   # Complexity metrics
+  # function_size is two-sided: both extremes are bad. The high block is
+  # higher-is-worse; the low block is lower-is-worse and only applies to
+  # functions with exactly one visible caller (fan_in == 1). The old flat
+  # form (excellent/good/fair/poor directly under function_size) is still
+  # accepted and configures the high side.
   function_size:
-    excellent: 20
-    good: 50
-    fair: 100
-    poor: 200
+    low:
+      excellent: 5  # >= 5 lines is fine
+      good: 4
+      fair: 3
+      poor: 1       # <= 2 lines is poor; critical unreachable by default
+    high:
+      excellent: 20
+      good: 50
+      fair: 100
+      poor: 200
 
   params:
     excellent: 3
@@ -180,8 +191,11 @@ The default thresholds are based on empirical observations of healthy codebases:
 
 | Metric | Excellent | Good | Fair | Poor | Critical |
 |--------|-----------|------|------|------|----------|
-| function_size | < 20 | < 50 | < 100 | < 200 | >= 200 |
+| function_size (high side) | < 20 | < 50 | < 100 | < 200 | >= 200 |
+| function_size (low side) | >= 5 | 4 | 3 | <= 2 | unreachable |
 | params | < 3 | < 5 | < 7 | < 10 | >= 10 |
+
+`function_size` is two-sided — a value gets the worse of its two side buckets. The low side only applies to functions with exactly one visible caller (`fan_in == 1`); see [Complexity Metrics](../metrics/complexity.md) for details.
 | cyclomatic | < 5 | < 10 | < 20 | < 30 | >= 30 |
 | cognitive | < 5 | < 10 | < 15 | < 25 | >= 25 |
 | max_scope | < 15 | < 30 | < 50 | < 100 | >= 100 |

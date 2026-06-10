@@ -155,38 +155,55 @@ fn compute_struct_lcom4(methods: &[&mdlr_core::Unit]) -> usize {
     }
 
     let mut uf = UnionFind::new(methods.len());
+    connect_methods_sharing_fields(&mut uf, methods);
+    connect_methods_calling_each_other(&mut uf, methods);
+    uf.count_components()
+}
 
-    // Map each field to the method indices that access it
+/// Union methods that read or write a common field.
+fn connect_methods_sharing_fields(
+    uf: &mut UnionFind,
+    methods: &[&mdlr_core::Unit],
+) {
     let mut field_to_methods: HashMap<&String, Vec<usize>> = HashMap::new();
     for (idx, method) in methods.iter().enumerate() {
         for field in method.reads.iter().chain(method.writes.iter()) {
             field_to_methods.entry(field).or_default().push(idx);
         }
     }
-
-    // Connect methods that share fields
     for method_indices in field_to_methods.values() {
         for window in method_indices.windows(2) {
             uf.union(window[0], window[1]);
         }
     }
+}
 
-    // Connect methods that call each other (within this struct)
-    let method_id_to_idx: HashMap<&str, usize> = methods
+/// Union methods where one calls the other (within this struct). Recorded
+/// call paths rarely match unit ids exactly (extractors may qualify by
+/// module without the Self type, or record source forms like `self.x`),
+/// so match on the simple method name — the LCOM-standard heuristic.
+fn connect_methods_calling_each_other(
+    uf: &mut UnionFind,
+    methods: &[&mdlr_core::Unit],
+) {
+    fn simple_name(id: &str) -> &str {
+        id.rsplit("::").next().and_then(|s| s.rsplit('.').next()).unwrap_or(id)
+    }
+    let simple_name_to_idx: HashMap<&str, usize> = methods
         .iter()
         .enumerate()
-        .map(|(idx, m)| (m.id.as_str(), idx))
+        .map(|(idx, m)| (simple_name(&m.id), idx))
         .collect();
 
     for (idx, method) in methods.iter().enumerate() {
         for call in &method.calls {
-            if let Some(&called_idx) = method_id_to_idx.get(call.as_str()) {
+            if let Some(&called_idx) =
+                simple_name_to_idx.get(simple_name(call))
+            {
                 uf.union(idx, called_idx);
             }
         }
     }
-
-    uf.count_components()
 }
 
 fn compute_lcom(graph: &Graph) -> LcomMetrics {
@@ -404,6 +421,22 @@ mod tests {
         let metrics = StructMetrics::compute(&graph);
 
         // validate calls get_x, so they're connected → LCOM4 = 1
+        assert_eq!(metrics.lcom.max, 1);
+    }
+
+    #[test]
+    fn test_lcom4_connected_via_self_calls() {
+        let mut graph = Graph::new();
+        graph.add_unit(make_struct("Foo"));
+        // Calls are recorded in source form: `self.get_x`, not the full id.
+        let mut validate =
+            make_method("Foo::validate", "Foo", vec!["y"], vec![]);
+        validate.calls = vec!["self.get_x".to_string()];
+        graph.add_unit(make_method("Foo::get_x", "Foo", vec!["x"], vec![]));
+        graph.add_unit(validate);
+
+        let metrics = StructMetrics::compute(&graph);
+
         assert_eq!(metrics.lcom.max, 1);
     }
 

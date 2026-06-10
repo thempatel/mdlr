@@ -1,28 +1,6 @@
 use super::StructuralMetrics;
+use crate::thresholds::{Bucket, Thresholds};
 use serde::Serialize;
-
-/// Bucket labels for metric severity
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Bucket {
-    Excellent,
-    Good,
-    Fair,
-    Poor,
-    Critical,
-}
-
-impl std::fmt::Display for Bucket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Bucket::Excellent => write!(f, "excellent"),
-            Bucket::Good => write!(f, "good"),
-            Bucket::Fair => write!(f, "fair"),
-            Bucket::Poor => write!(f, "poor"),
-            Bucket::Critical => write!(f, "critical"),
-        }
-    }
-}
 
 /// A metric value with its evaluated bucket
 #[derive(Debug, Clone, Serialize)]
@@ -52,37 +30,6 @@ pub struct BucketedMetrics {
     pub fan_out: BucketedFanMetrics,
 }
 
-/// Thresholds for a single metric
-#[derive(Debug, Clone)]
-pub struct MetricThresholds {
-    pub excellent: f64,
-    pub good: f64,
-    pub fair: f64,
-    pub poor: f64,
-}
-
-impl MetricThresholds {
-    pub fn evaluate(&self, value: f64) -> Bucket {
-        if value < self.excellent {
-            Bucket::Excellent
-        } else if value < self.good {
-            Bucket::Good
-        } else if value < self.fair {
-            Bucket::Fair
-        } else if value < self.poor {
-            Bucket::Poor
-        } else {
-            Bucket::Critical
-        }
-    }
-}
-
-impl Default for MetricThresholds {
-    fn default() -> Self {
-        Self { excellent: 1.0, good: 2.0, fair: 3.0, poor: 5.0 }
-    }
-}
-
 /// Display mode for metric output
 #[derive(Debug, Clone, Copy, Default)]
 pub enum DisplayMode {
@@ -90,95 +37,6 @@ pub enum DisplayMode {
     Label,
     #[default]
     Both,
-}
-
-/// Thresholds for all metrics
-#[derive(Debug, Clone)]
-pub struct Thresholds {
-    pub dag_density: MetricThresholds,
-    pub fan_in_max: MetricThresholds,
-    pub fan_in_mean: MetricThresholds,
-    pub fan_out_max: MetricThresholds,
-    pub fan_out_mean: MetricThresholds,
-    pub function_size: MetricThresholds,
-    pub params: MetricThresholds,
-    pub cyclomatic: MetricThresholds,
-    pub methods_per_struct: MetricThresholds,
-    pub lcom: MetricThresholds,
-    pub file_loc: MetricThresholds,
-}
-
-impl Default for Thresholds {
-    fn default() -> Self {
-        Self {
-            dag_density: MetricThresholds {
-                excellent: 0.5,
-                good: 1.0,
-                fair: 2.0,
-                poor: 3.0,
-            },
-            fan_in_max: MetricThresholds {
-                excellent: 3.0,
-                good: 5.0,
-                fair: 10.0,
-                poor: 15.0,
-            },
-            fan_in_mean: MetricThresholds {
-                excellent: 1.0,
-                good: 2.0,
-                fair: 3.0,
-                poor: 5.0,
-            },
-            fan_out_max: MetricThresholds {
-                excellent: 3.0,
-                good: 5.0,
-                fair: 8.0,
-                poor: 12.0,
-            },
-            fan_out_mean: MetricThresholds {
-                excellent: 1.0,
-                good: 2.0,
-                fair: 3.0,
-                poor: 5.0,
-            },
-            function_size: MetricThresholds {
-                excellent: 20.0,
-                good: 50.0,
-                fair: 100.0,
-                poor: 200.0,
-            },
-            params: MetricThresholds {
-                excellent: 2.0,
-                good: 4.0,
-                fair: 6.0,
-                poor: 8.0,
-            },
-            cyclomatic: MetricThresholds {
-                excellent: 5.0,
-                good: 10.0,
-                fair: 20.0,
-                poor: 40.0,
-            },
-            methods_per_struct: MetricThresholds {
-                excellent: 5.0,
-                good: 10.0,
-                fair: 15.0,
-                poor: 25.0,
-            },
-            lcom: MetricThresholds {
-                excellent: 0.2,
-                good: 0.4,
-                fair: 0.6,
-                poor: 0.8,
-            },
-            file_loc: MetricThresholds {
-                excellent: 200.0,
-                good: 500.0,
-                fair: 1000.0,
-                poor: 2000.0,
-            },
-        }
-    }
 }
 
 impl BucketedMetrics {
@@ -324,6 +182,23 @@ impl std::fmt::Display for MetricsDisplay<'_> {
 mod tests {
     use super::*;
     use crate::FanMetrics;
+    use crate::thresholds::MetricThresholds;
+
+    fn test_thresholds() -> Thresholds {
+        let mt = |excellent, good, fair, poor| MetricThresholds {
+            excellent,
+            good,
+            fair,
+            poor,
+        };
+        Thresholds {
+            dag_density: mt(0.5, 1.0, 2.0, 3.0),
+            fan_in_max: mt(3.0, 5.0, 10.0, 15.0),
+            fan_in_mean: mt(1.0, 2.0, 3.0, 5.0),
+            fan_out_max: mt(3.0, 5.0, 8.0, 12.0),
+            fan_out_mean: mt(1.0, 2.0, 3.0, 5.0),
+        }
+    }
 
     fn make_test_metrics() -> StructuralMetrics {
         StructuralMetrics {
@@ -337,7 +212,7 @@ mod tests {
     #[test]
     fn test_bucketed_metrics() {
         let metrics = make_test_metrics();
-        let thresholds = Thresholds::default();
+        let thresholds = test_thresholds();
         let bucketed = BucketedMetrics::from_metrics(&metrics, &thresholds);
 
         assert_eq!(bucketed.dag_density.bucket, Bucket::Excellent);
@@ -350,7 +225,7 @@ mod tests {
     #[test]
     fn test_display_both_mode() {
         let metrics = make_test_metrics();
-        let thresholds = Thresholds::default();
+        let thresholds = test_thresholds();
         let display =
             MetricsDisplay::new(&metrics, &thresholds, DisplayMode::Both);
         let output = format!("{}", display);
@@ -367,7 +242,7 @@ mod tests {
     #[test]
     fn test_display_value_mode() {
         let metrics = make_test_metrics();
-        let thresholds = Thresholds::default();
+        let thresholds = test_thresholds();
         let display =
             MetricsDisplay::new(&metrics, &thresholds, DisplayMode::Value);
         let output = format!("{}", display);
@@ -379,7 +254,7 @@ mod tests {
     #[test]
     fn test_display_label_mode() {
         let metrics = make_test_metrics();
-        let thresholds = Thresholds::default();
+        let thresholds = test_thresholds();
         let display =
             MetricsDisplay::new(&metrics, &thresholds, DisplayMode::Label);
         let output = format!("{}", display);
