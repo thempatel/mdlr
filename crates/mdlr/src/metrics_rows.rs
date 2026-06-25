@@ -21,6 +21,22 @@ struct ScoredRow {
 }
 
 impl ScoredRow {
+    /// Build a row for `symbol`/`value`, bucketed by a higher-is-worse
+    /// threshold table. Shared by the threshold-gated specs (fan_in, fan_out).
+    fn bucketed(
+        metric_name: &str,
+        symbol: &str,
+        value: usize,
+        thresholds: &MetricThresholds,
+    ) -> Self {
+        ScoredRow {
+            metric_name: metric_name.to_string(),
+            symbol: symbol.to_string(),
+            value: value.to_string(),
+            bucket: thresholds.evaluate(value as f64),
+        }
+    }
+
     /// Convert to MetricRow for output
     fn into_row(self) -> MetricRow {
         (self.metric_name, self.symbol, self.value, self.bucket.to_string())
@@ -234,12 +250,7 @@ impl<'a> DelegatorFilteredFanOutSpec<'a> {
         if require_non_delegator && self.is_delegator(symbol) {
             return None;
         }
-        Some(ScoredRow {
-            metric_name: "fan_out".to_string(),
-            symbol: symbol.to_string(),
-            value: value.to_string(),
-            bucket: self.thresholds.evaluate(value as f64),
-        })
+        Some(ScoredRow::bucketed("fan_out", symbol, value, &self.thresholds))
     }
 }
 
@@ -263,12 +274,7 @@ impl HubFilteredFanInSpec<'_> {
         if require_hub && !self.hubs.contains_key(symbol) {
             return None;
         }
-        Some(ScoredRow {
-            metric_name: "fan_in".to_string(),
-            symbol: symbol.to_string(),
-            value: value.to_string(),
-            bucket: self.thresholds.evaluate(value as f64),
-        })
+        Some(ScoredRow::bucketed("fan_in", symbol, value, &self.thresholds))
     }
 }
 
