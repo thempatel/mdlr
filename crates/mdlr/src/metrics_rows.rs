@@ -21,6 +21,22 @@ struct ScoredRow {
 }
 
 impl ScoredRow {
+    /// Build a row for `symbol`/`value`, bucketed by a higher-is-worse
+    /// threshold table. Shared by the threshold-gated specs (fan_in, fan_out).
+    fn bucketed(
+        metric_name: &str,
+        symbol: &str,
+        value: usize,
+        thresholds: &MetricThresholds,
+    ) -> Self {
+        ScoredRow {
+            metric_name: metric_name.to_string(),
+            symbol: symbol.to_string(),
+            value: value.to_string(),
+            bucket: thresholds.evaluate(value as f64),
+        }
+    }
+
     /// Convert to MetricRow for output
     fn into_row(self) -> MetricRow {
         (self.metric_name, self.symbol, self.value, self.bucket.to_string())
@@ -171,6 +187,73 @@ impl<'a> TwoSidedSizeSpec<'a> {
     }
 }
 
+/// Specification for collecting `fan_out` with Delegator filtering.
+///
+/// A unit is a *Delegator* when its high `fan_out` is accompanied by low
+/// internal complexity — both `cyclomatic` and `cognitive` sit below their
+/// `fair` thresholds. Such a unit just forwards work to many callees, so a
+/// high `fan_out` is usually good design rather than a refactoring target;
+/// its row is suppressed in global/top-k output. In symbol-filter mode the
+/// value is always shown (mirrors [`HubFilteredFanInSpec`]).
+///
+/// The complexity lookups read the computed `cyclomatic`/`cognitive`
+/// distributions directly, so the gate works even when those metrics are in
+/// `disabled_metrics` (disabling is output-control, not compute-control). A
+/// symbol absent from a distribution is treated as 0 — i.e. low.
+pub(crate) struct DelegatorFilteredFanOutSpec<'a> {
+    pub(crate) distribution: &'a [(String, usize)],
+    pub(crate) thresholds: MetricThresholds,
+    cyclomatic: HashMap<&'a str, usize>,
+    cognitive: HashMap<&'a str, usize>,
+    cyclomatic_fair: f64,
+    cognitive_fair: f64,
+}
+
+impl<'a> DelegatorFilteredFanOutSpec<'a> {
+    fn new(
+        m: &'a MetricsBundle,
+        thresholds: MetricThresholds,
+        th: &HashMap<String, MetricThresholds>,
+    ) -> Self {
+        let by_symbol = |dist: &'a [(String, usize)]| {
+            dist.iter().map(|(id, v)| (id.as_str(), *v)).collect()
+        };
+        DelegatorFilteredFanOutSpec {
+            distribution: &m.structural.fan_out.distribution,
+            thresholds,
+            cyclomatic: by_symbol(&m.complexity.cyclomatic.distribution),
+            cognitive: by_symbol(&m.complexity.cognitive.distribution),
+            cyclomatic_fair: th["cyclomatic"].fair,
+            cognitive_fair: th["cognitive"].fair,
+        }
+    }
+
+    fn is_delegator(&self, symbol: &str) -> bool {
+        let cyc = self.cyclomatic.get(symbol).copied().unwrap_or(0);
+        let cog = self.cognitive.get(symbol).copied().unwrap_or(0);
+        (cyc as f64) < self.cyclomatic_fair
+            && (cog as f64) < self.cognitive_fair
+    }
+
+    /// In global mode (`require_non_delegator`) Delegators are dropped; in
+    /// symbol-filter mode the value is shown regardless. `fan_out == 0`
+    /// units are always boring and produce no row.
+    fn score(
+        &self,
+        symbol: &str,
+        value: usize,
+        require_non_delegator: bool,
+    ) -> Option<ScoredRow> {
+        if value == 0 {
+            return None;
+        }
+        if require_non_delegator && self.is_delegator(symbol) {
+            return None;
+        }
+        Some(ScoredRow::bucketed("fan_out", symbol, value, &self.thresholds))
+    }
+}
+
 /// Specification for collecting fan_in metric with hub filtering
 /// Only includes units that are hubs (high fan_in AND high fan_out)
 pub(crate) struct HubFilteredFanInSpec<'a> {
@@ -191,12 +274,7 @@ impl HubFilteredFanInSpec<'_> {
         if require_hub && !self.hubs.contains_key(symbol) {
             return None;
         }
-        Some(ScoredRow {
-            metric_name: "fan_in".to_string(),
-            symbol: symbol.to_string(),
-            value: value.to_string(),
-            bucket: self.thresholds.evaluate(value as f64),
-        })
+        Some(ScoredRow::bucketed("fan_in", symbol, value, &self.thresholds))
     }
 }
 
@@ -233,6 +311,7 @@ pub(crate) struct MetricSpecs<'a> {
     pub(crate) int_specs: Vec<IntMetricSpec<'a>>,
     pub(crate) function_size_spec: Option<TwoSidedSizeSpec<'a>>,
     pub(crate) fan_in_spec: Option<HubFilteredFanInSpec<'a>>,
+    pub(crate) fan_out_spec: Option<DelegatorFilteredFanOutSpec<'a>>,
 }
 
 impl<'a> MetricSpecs<'a> {
@@ -252,7 +331,6 @@ impl<'a> MetricSpecs<'a> {
             }
         };
         let mut int_specs = vec![
-            spec("fan_out", &m.structural.fan_out.distribution, 0),
             spec("params", &c.params.distribution, 0),
             spec("cyclomatic", &c.cyclomatic.distribution, 1),
             spec("cognitive", &c.cognitive.distribution, 1),
@@ -282,14 +360,27 @@ impl<'a> MetricSpecs<'a> {
                 thresholds: th["fan_in"].clone(),
                 hubs: &m.structural.hubs,
             });
+        let fan_out_spec = (!config.is_disabled("fan_out")).then(|| {
+            DelegatorFilteredFanOutSpec::new(m, th["fan_out"].clone(), &th)
+        });
 
-        MetricSpecs { int_specs, function_size_spec, fan_in_spec }
+        MetricSpecs {
+            int_specs,
+            function_size_spec,
+            fan_in_spec,
+            fan_out_spec,
+        }
     }
 
     /// Collect rows from every spec. `filter` restricts to one symbol
     /// (symbol view); `None` collects everything (global sorting mode).
     fn collect(&self, filter: Option<&str>) -> Vec<ScoredRow> {
         let mut rows = Vec::new();
+        if let Some(spec) = &self.fan_out_spec {
+            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
+                spec.score(s, v, filter.is_none())
+            });
+        }
         for spec in &self.int_specs {
             collect_rows(spec.distribution, filter, &mut rows, |s, v| {
                 spec.score(s, v)
@@ -439,5 +530,56 @@ mod tests {
         assert!(!by_symbol.contains_key("shared_getter"));
         // The high side is unaffected by the gate.
         assert_eq!(by_symbol["big"], Bucket::Critical);
+    }
+
+    fn fanout_spec<'a>(
+        distribution: &'a [(String, usize)],
+        cyclomatic: &[(&'a str, usize)],
+        cognitive: &[(&'a str, usize)],
+    ) -> DelegatorFilteredFanOutSpec<'a> {
+        let th = Config::default().thresholds.by_name();
+        DelegatorFilteredFanOutSpec {
+            distribution,
+            thresholds: th["fan_out"].clone(),
+            cyclomatic: cyclomatic.iter().copied().collect(),
+            cognitive: cognitive.iter().copied().collect(),
+            cyclomatic_fair: th["cyclomatic"].fair,
+            cognitive_fair: th["cognitive"].fair,
+        }
+    }
+
+    #[test]
+    fn delegator_fanout_suppressed_in_global_only() {
+        let distribution = vec![
+            ("delegator".to_string(), 40),
+            ("branchy".to_string(), 40),
+            ("nested".to_string(), 40),
+        ];
+        let spec = fanout_spec(
+            &distribution,
+            // cyclomatic: delegator low, branchy high, nested low
+            &[("delegator", 2), ("branchy", 25), ("nested", 2)],
+            // cognitive: delegator low, branchy low, nested high
+            &[("delegator", 1), ("branchy", 1), ("nested", 20)],
+        );
+
+        // Global mode: a high-fan_out unit with BOTH complexities low is a
+        // Delegator and is suppressed; either complexity being high flags it.
+        assert!(spec.score("delegator", 40, true).is_none());
+        assert!(spec.score("branchy", 40, true).is_some());
+        assert!(spec.score("nested", 40, true).is_some());
+
+        // A symbol absent from the complexity maps reads as 0 -> low -> a
+        // Delegator -> suppressed.
+        assert!(spec.score("unknown", 40, true).is_none());
+
+        // Symbol-filter mode is exempt: the Delegator's value is still shown,
+        // with its real (Critical) bucket.
+        let row = spec.score("delegator", 40, false).unwrap();
+        assert_eq!(row.bucket, Bucket::Critical);
+
+        // fan_out == 0 is always boring, in either mode.
+        assert!(spec.score("delegator", 0, true).is_none());
+        assert!(spec.score("delegator", 0, false).is_none());
     }
 }

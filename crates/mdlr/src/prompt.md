@@ -49,7 +49,7 @@ mdlr metrics get cyclomatic
 
 ### Key Metrics
 
-- **fan_out**: Dependencies a unit has. High = too many responsibilities
+- **fan_out**: Dependencies a unit has. High = too many responsibilities — but only flagged when the unit also has real internal complexity. A high-fan_out unit whose cyclomatic and cognitive are both low is a *Delegator* (it just forwards to many callees, usually fine) and is omitted from the listing; inspect it directly with `mdlr check <symbol>` if needed
 - **fan_in**: Units depending on this. Very high = potential bottleneck
 - **function_size**: Lines of code in a function. Two-sided: high = hard to understand/test (split it); low (1-2 lines, flagged only when the function has exactly one caller) = a pass-through adding indirection without abstraction (inline it into its caller). Tiny functions with zero or multiple callers are never flagged — do not inline trait-required methods, public API accessors, or shared helpers
 - **file_loc**: Lines of code in a file. High = hard to navigate/maintain
