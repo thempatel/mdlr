@@ -20,7 +20,7 @@ const METRIC_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "fan_out",
-        "Number of outgoing dependencies from a unit. High values indicate a unit with many responsibilities that may need refactoring.",
+        "Number of outgoing dependencies from a unit. High values indicate a unit with many responsibilities that may need refactoring — but only when paired with real internal complexity. A unit with high fan_out whose cyclomatic AND cognitive are both below their 'fair' thresholds is a Delegator (it just forwards work to many callees), which is usually good design; its fan_out is suppressed from the global/top-k listing and shown only via 'mdlr check <symbol>'.",
     ),
     (
         "function_size",

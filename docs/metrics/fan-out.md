@@ -49,6 +49,24 @@ If any of those 6 functions change their interface, `extract_from_node` may need
 | 6-10 | High complexity, may benefit from decomposition |
 | > 10 | Very high complexity - strong candidate for refactoring |
 
+## Delegator suppression
+
+A high fan-out is only worth flagging when it comes with real internal
+complexity. A unit that calls many others but barely branches is a
+**Delegator** — it just forwards work to its callees, which is usually good
+design, not a refactoring target.
+
+`mdlr check` detects Delegators and omits their fan-out from the global /
+top-k listing. A unit is a Delegator when **both** its `cyclomatic` and its
+`cognitive` complexity sit below their `fair` thresholds. So fan-out surfaces
+in the listing only for units that call a lot **and** branch/nest a lot.
+
+This filtering applies to the ranked listing only. The value is always
+available for a specific unit via `mdlr check <symbol>`, regardless of
+Delegator status. The detection reads the computed complexity values
+directly, so it still works when `cyclomatic` or `cognitive` is in
+`disabled_metrics`.
+
 ## What To Do
 
 **High fan-out units should be examined for:**

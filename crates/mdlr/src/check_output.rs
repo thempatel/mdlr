@@ -291,6 +291,11 @@ fn build_symbol_json(
             insert(spec.name, value, spec.bucket_for(value));
         }
     }
+    if let Some(spec) = &specs.fan_out_spec
+        && let Some(value) = find_value(spec.distribution, symbol_id)
+    {
+        insert("fan_out", value, spec.thresholds.evaluate(value as f64));
+    }
     if let Some(spec) = &specs.fan_in_spec
         && let Some(value) = find_value(spec.distribution, symbol_id)
     {
