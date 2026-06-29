@@ -28,7 +28,7 @@ const METRIC_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "params",
-        "Number of parameters on a function. High values (>4) often indicate a function doing too much or needing a parameter object.",
+        "Number of parameters on a function. High values (>4) often indicate a function doing too much or needing a parameter object — but only when the body has real internal complexity. A unit whose params is high while BOTH its cyclomatic and cognitive stay below their 'fair' thresholds has a wide signature of passive inputs (threaded context handles, injected dependencies, CLI flags, or object-construction fields), not a behavioral-knob explosion. Its params is suppressed from the global/top-k listing and shown only via 'mdlr check <symbol>' (mirrors the Delegator rule for fan_out and the Dispatcher rule for cyclomatic).",
     ),
     (
         "cyclomatic",

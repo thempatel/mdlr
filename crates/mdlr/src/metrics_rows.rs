@@ -324,6 +324,75 @@ impl<'a> DispatcherFilteredCyclomaticSpec<'a> {
     }
 }
 
+/// Specification for collecting `params` with wide-signature filtering.
+///
+/// A unit has a *wide signature* when its high `params` count is breadth of
+/// passive inputs, not a behavioral-knob explosion: both `cyclomatic` and
+/// `cognitive` sit below their `fair` thresholds, so the parameters are
+/// threaded context handles, injected dependencies, CLI flags, or
+/// object-construction inputs rather than independent control inputs. Such a
+/// long signature is usually appropriate rather than a refactoring target, so
+/// its row is suppressed in global/top-k output. In symbol-filter mode the
+/// value is always shown (mirrors [`DelegatorFilteredFanOutSpec`]).
+///
+/// The complexity lookups read the computed `cyclomatic`/`cognitive`
+/// distributions directly, so the gate works even when those metrics are in
+/// `disabled_metrics` (disabling is output-control, not compute-control). A
+/// symbol absent from a distribution is treated as 0 — i.e. low.
+pub(crate) struct WideSignatureFilteredParamsSpec<'a> {
+    pub(crate) distribution: &'a [(String, usize)],
+    pub(crate) thresholds: MetricThresholds,
+    cyclomatic: HashMap<&'a str, usize>,
+    cognitive: HashMap<&'a str, usize>,
+    cyclomatic_fair: f64,
+    cognitive_fair: f64,
+}
+
+impl<'a> WideSignatureFilteredParamsSpec<'a> {
+    fn new(
+        m: &'a MetricsBundle,
+        thresholds: MetricThresholds,
+        th: &HashMap<String, MetricThresholds>,
+    ) -> Self {
+        let by_symbol = |dist: &'a [(String, usize)]| {
+            dist.iter().map(|(id, v)| (id.as_str(), *v)).collect()
+        };
+        WideSignatureFilteredParamsSpec {
+            distribution: &m.complexity.params.distribution,
+            thresholds,
+            cyclomatic: by_symbol(&m.complexity.cyclomatic.distribution),
+            cognitive: by_symbol(&m.complexity.cognitive.distribution),
+            cyclomatic_fair: th["cyclomatic"].fair,
+            cognitive_fair: th["cognitive"].fair,
+        }
+    }
+
+    fn is_wide_signature(&self, symbol: &str) -> bool {
+        let cyc = self.cyclomatic.get(symbol).copied().unwrap_or(0);
+        let cog = self.cognitive.get(symbol).copied().unwrap_or(0);
+        (cyc as f64) < self.cyclomatic_fair
+            && (cog as f64) < self.cognitive_fair
+    }
+
+    /// In global mode (`require_non_wide`) wide-signature units are dropped; in
+    /// symbol-filter mode the value is shown regardless. `params == 0` units
+    /// are always boring and produce no row.
+    fn score(
+        &self,
+        symbol: &str,
+        value: usize,
+        require_non_wide: bool,
+    ) -> Option<ScoredRow> {
+        if value == 0 {
+            return None;
+        }
+        if require_non_wide && self.is_wide_signature(symbol) {
+            return None;
+        }
+        Some(ScoredRow::bucketed("params", symbol, value, &self.thresholds))
+    }
+}
+
 /// Specification for collecting fan_in metric with hub filtering
 /// Only includes units that are hubs (high fan_in AND high fan_out)
 pub(crate) struct HubFilteredFanInSpec<'a> {
@@ -383,6 +452,7 @@ pub(crate) struct MetricSpecs<'a> {
     pub(crate) fan_in_spec: Option<HubFilteredFanInSpec<'a>>,
     pub(crate) fan_out_spec: Option<DelegatorFilteredFanOutSpec<'a>>,
     pub(crate) cyclomatic_spec: Option<DispatcherFilteredCyclomaticSpec<'a>>,
+    pub(crate) params_spec: Option<WideSignatureFilteredParamsSpec<'a>>,
 }
 
 impl<'a> MetricSpecs<'a> {
@@ -402,7 +472,6 @@ impl<'a> MetricSpecs<'a> {
             }
         };
         let mut int_specs = vec![
-            spec("params", &c.params.distribution, 0),
             spec("cognitive", &c.cognitive.distribution, 1),
             spec("max_scope", &c.max_scope.distribution, 0),
             spec(
@@ -440,6 +509,9 @@ impl<'a> MetricSpecs<'a> {
                 &th,
             )
         });
+        let params_spec = (!config.is_disabled("params")).then(|| {
+            WideSignatureFilteredParamsSpec::new(m, th["params"].clone(), &th)
+        });
 
         MetricSpecs {
             int_specs,
@@ -447,6 +519,7 @@ impl<'a> MetricSpecs<'a> {
             fan_in_spec,
             fan_out_spec,
             cyclomatic_spec,
+            params_spec,
         }
     }
 
@@ -460,6 +533,11 @@ impl<'a> MetricSpecs<'a> {
             });
         }
         if let Some(spec) = &self.cyclomatic_spec {
+            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
+                spec.score(s, v, filter.is_none())
+            });
+        }
+        if let Some(spec) = &self.params_spec {
             collect_rows(spec.distribution, filter, &mut rows, |s, v| {
                 spec.score(s, v, filter.is_none())
             });
@@ -706,5 +784,57 @@ mod tests {
         // cyclomatic <= 1 is always boring (single linear path), either mode.
         assert!(spec.score("dispatcher", 1, true).is_none());
         assert!(spec.score("nested", 1, false).is_none());
+    }
+
+    fn params_spec<'a>(
+        distribution: &'a [(String, usize)],
+        cyclomatic: &[(&'a str, usize)],
+        cognitive: &[(&'a str, usize)],
+    ) -> WideSignatureFilteredParamsSpec<'a> {
+        let th = Config::default().thresholds.by_name();
+        WideSignatureFilteredParamsSpec {
+            distribution,
+            thresholds: th["params"].clone(),
+            cyclomatic: cyclomatic.iter().copied().collect(),
+            cognitive: cognitive.iter().copied().collect(),
+            cyclomatic_fair: th["cyclomatic"].fair,
+            cognitive_fair: th["cognitive"].fair,
+        }
+    }
+
+    #[test]
+    fn wide_signature_params_suppressed_in_global_only() {
+        let distribution = vec![
+            ("wide".to_string(), 8),
+            ("branchy".to_string(), 8),
+            ("nested".to_string(), 8),
+        ];
+        let spec = params_spec(
+            &distribution,
+            // cyclomatic: wide low, branchy high, nested low
+            &[("wide", 2), ("branchy", 25), ("nested", 2)],
+            // cognitive: wide low, branchy low, nested high
+            &[("wide", 1), ("branchy", 1), ("nested", 20)],
+        );
+
+        // Global mode: a many-param unit with BOTH complexities low is a wide
+        // signature (passive inputs) and is suppressed; either complexity being
+        // high flags it as a genuine god-function.
+        assert!(spec.score("wide", 8, true).is_none());
+        assert!(spec.score("branchy", 8, true).is_some());
+        assert!(spec.score("nested", 8, true).is_some());
+
+        // A symbol absent from the complexity maps reads as 0 -> low -> a wide
+        // signature -> suppressed.
+        assert!(spec.score("unknown", 8, true).is_none());
+
+        // Symbol-filter mode is exempt: the value is still shown, with its real
+        // (Poor) bucket.
+        let row = spec.score("wide", 8, false).unwrap();
+        assert_eq!(row.bucket, Bucket::Poor);
+
+        // params == 0 is always boring, in either mode.
+        assert!(spec.score("wide", 0, true).is_none());
+        assert!(spec.score("wide", 0, false).is_none());
     }
 }

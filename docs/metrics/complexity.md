@@ -60,6 +60,27 @@ Number of parameters per function. Self/&self/&mut self parameters are not count
 | Poor | < 10 params |
 | Critical | >= 10 params |
 
+#### Wide-signature suppression
+
+A high parameter count is only worth flagging when the body does something
+complex with those parameters. A unit with many parameters but little internal
+complexity has a **wide signature** of passive inputs — threaded context
+handles (`db`, `sema`, `vfs`, `cwd`), injected dependencies, CLI flags, or the
+fields assembled into one object — not a behavioral-knob explosion.
+
+`mdlr check` detects wide signatures and omits their `params` from the global /
+top-k listing. A unit has a wide signature when **both** its `cyclomatic` and
+`cognitive` complexity sit below their `fair` thresholds. A wide signature that
+*also* branches a lot or nests deeply stays in the listing — that is a genuine
+god-function. This mirrors the [Delegator suppression](fan-out.md#delegator-suppression)
+that gates `fan_out` and the [Dispatcher suppression](#dispatcher-suppression)
+that gates `cyclomatic`.
+
+This filtering applies to the ranked listing only. The value is always available
+for a specific unit via `mdlr check <symbol>`, regardless of wide-signature
+status. The detection reads the computed `cyclomatic`/`cognitive` values
+directly, so it still works when either is in `disabled_metrics`.
+
 ### Cyclomatic Complexity
 
 Measures the number of independent paths through a function. Higher values indicate more complex control flow.

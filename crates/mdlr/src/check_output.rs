@@ -315,6 +315,11 @@ fn build_symbol_json(
     {
         insert("cyclomatic", value, spec.thresholds.evaluate(value as f64));
     }
+    if let Some(spec) = &specs.params_spec
+        && let Some(value) = find_value(spec.distribution, symbol_id)
+    {
+        insert("params", value, spec.thresholds.evaluate(value as f64));
+    }
     if let Some(spec) = &specs.fan_in_spec
         && let Some(value) = find_value(spec.distribution, symbol_id)
     {
