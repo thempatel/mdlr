@@ -32,7 +32,7 @@ const METRIC_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "cyclomatic",
-        "Cyclomatic complexity (branches + 1) of a function. High values indicate complex control flow that is harder to test and maintain.",
+        "Cyclomatic complexity (branches + 1) of a function. High values indicate complex control flow that is harder to test and maintain — but only when the branching has real depth. A unit whose cyclomatic is high while its cognitive stays below its 'fair' threshold is a Dispatcher: its branch count is breadth (one match/switch arm per enum or AST variant, shallow), not nested decision logic. A Dispatcher's cyclomatic is suppressed from the global/top-k listing and shown only via 'mdlr check <symbol>' (mirrors the Delegator rule for fan_out).",
     ),
     (
         "cognitive",

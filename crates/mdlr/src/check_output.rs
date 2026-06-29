@@ -13,7 +13,7 @@ use crate::config;
 use crate::display_scope::DisplayScope;
 use crate::json_output::{
     build_bucketed_json, build_complexity_json, build_fan_metrics_json,
-    build_file_loc_json, build_struct_json,
+    build_file_loc_json, build_struct_json, distribution_json, unit_map,
 };
 use crate::metrics_rows::{
     MetricSpecs, MetricsBundle, RowSelection, collect_metric_rows,
@@ -183,23 +183,36 @@ fn build_metrics_json(
     let bucketed =
         BucketedMetrics::from_metrics(&computed.structural, &thresholds);
 
+    // Shared lookups for attaching source file/lines and severity buckets to
+    // every distribution entry.
+    let units = unit_map(&computed.graph.units);
+    let fan_in: std::collections::HashMap<&str, usize> = computed
+        .structural
+        .fan_in
+        .distribution
+        .iter()
+        .map(|(id, v)| (id.as_str(), *v))
+        .collect();
+    let by_name = config.thresholds.by_name();
+
     let duplication_json = serde_json::json!({
         "max": computed.duplication.max,
         "mean": computed.duplication.mean,
         "p90": computed.duplication.p90,
         "clone_count": computed.duplication.clone_count,
-        "distribution": computed.duplication.distribution.iter()
-            .map(|(unit, pct)| serde_json::json!({"unit": unit, "duplication_pct": pct}))
-            .collect::<Vec<_>>(),
+        "distribution": distribution_json(
+            &computed.duplication.distribution, "unit", "duplication_pct", &units,
+            |_, v| by_name["duplication_pct"].evaluate(v as f64),
+        ),
     });
 
     let mut metrics = serde_json::json!({
         "dag_density": build_bucketed_json(&bucketed.dag_density),
-        "fan_in": build_fan_metrics_json(&bucketed.fan_in, &computed.structural.fan_in.distribution),
-        "fan_out": build_fan_metrics_json(&bucketed.fan_out, &computed.structural.fan_out.distribution),
-        "complexity": build_complexity_json(&computed.complexity),
-        "struct": build_struct_json(&computed.struct_metrics),
-        "file_loc": build_file_loc_json(&computed.file_loc),
+        "fan_in": build_fan_metrics_json(&bucketed.fan_in, &computed.structural.fan_in.distribution, &by_name["fan_in"], &units),
+        "fan_out": build_fan_metrics_json(&bucketed.fan_out, &computed.structural.fan_out.distribution, &by_name["fan_out"], &units),
+        "complexity": build_complexity_json(&computed.complexity, config, &units, &fan_in),
+        "struct": build_struct_json(&computed.struct_metrics, config, &units),
+        "file_loc": build_file_loc_json(&computed.file_loc, config, &units),
         "duplication": duplication_json,
     });
     if let Some(cov) = computed.coverage.as_ref() {
@@ -230,6 +243,7 @@ fn prune_disabled_metrics(
         ("function_size", "complexity", "size"),
         ("params", "complexity", "params"),
         ("cyclomatic", "complexity", "cyclomatic"),
+        ("cognitive", "complexity", "cognitive"),
         ("max_scope", "complexity", "max_scope"),
         ("methods_per_struct", "struct", "methods_per_struct"),
         ("lcom", "struct", "lcom"),
@@ -296,6 +310,11 @@ fn build_symbol_json(
     {
         insert("fan_out", value, spec.thresholds.evaluate(value as f64));
     }
+    if let Some(spec) = &specs.cyclomatic_spec
+        && let Some(value) = find_value(spec.distribution, symbol_id)
+    {
+        insert("cyclomatic", value, spec.thresholds.evaluate(value as f64));
+    }
     if let Some(spec) = &specs.fan_in_spec
         && let Some(value) = find_value(spec.distribution, symbol_id)
     {
@@ -314,6 +333,14 @@ fn build_symbol_json(
         "symbol": symbol_id,
         "metrics": metrics
     });
+    if let Some(unit) = computed.graph.units.iter().find(|u| u.id == symbol_id)
+    {
+        output["file"] = serde_json::json!(unit.file.to_string_lossy());
+        output["lines"] = serde_json::json!({
+            "start": unit.span.start_line,
+            "end": unit.span.end_line,
+        });
+    }
     if is_partial {
         output["partial"] = serde_json::json!(true);
     }

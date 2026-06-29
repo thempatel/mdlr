@@ -109,6 +109,7 @@ fn resolve_unit_calls(
     name_to_ids: &HashMap<String, Vec<String>>,
 ) {
     let caller_file = unit.file.to_string_lossy();
+    let caller_crate = crate_of(&unit.id);
 
     for call in &unit.calls {
         // First check if the call is already a fully resolved path that matches a unit ID
@@ -124,7 +125,13 @@ fn resolve_unit_calls(
         }
 
         // Fall back to heuristic resolution
-        let resolved = resolve_call(call, &caller_file, unit_ids, name_to_ids);
+        let resolved = resolve_call(
+            call,
+            &caller_file,
+            caller_crate,
+            unit_ids,
+            name_to_ids,
+        );
 
         if let Some(target_id) = resolved {
             // Don't create self-loops
@@ -143,6 +150,7 @@ fn resolve_unit_calls(
 fn resolve_call(
     call: &str,
     caller_file: &str,
+    caller_crate: &str,
     unit_ids: &HashSet<String>,
     name_to_ids: &HashMap<String, Vec<String>>,
 ) -> Option<String> {
@@ -159,35 +167,38 @@ fn resolve_call(
 
     // 3. Look up in name index
     if let Some(resolved) =
-        resolve_from_name_index(call, caller_file, name_to_ids)
+        resolve_from_name_index(call, caller_file, caller_crate, name_to_ids)
     {
         return Some(resolved);
     }
 
     // 4. Handle method calls like "self.field" or "obj.method"
-    if let Some(resolved) = resolve_method_call(call, caller_file, name_to_ids)
+    if let Some(resolved) =
+        resolve_method_call(call, caller_file, caller_crate, name_to_ids)
     {
         return Some(resolved);
     }
 
     // 5. Handle path-style calls like "module::function" or "Type::method"
-    resolve_path_call(call, name_to_ids)
+    resolve_path_call(call, caller_crate, name_to_ids)
 }
 
-/// Resolve from name index, preferring same-file candidates.
+/// Resolve from name index, preferring same-file then same-crate candidates.
 fn resolve_from_name_index(
     call: &str,
     caller_file: &str,
+    caller_crate: &str,
     name_to_ids: &HashMap<String, Vec<String>>,
 ) -> Option<String> {
     let candidates = name_to_ids.get(call)?;
-    pick_best_candidate(candidates, caller_file)
+    pick_best_candidate(candidates, caller_file, caller_crate)
 }
 
 /// Resolve method calls like "obj.method" by extracting the method name.
 fn resolve_method_call(
     call: &str,
     caller_file: &str,
+    caller_crate: &str,
     name_to_ids: &HashMap<String, Vec<String>>,
 ) -> Option<String> {
     if !call.contains('.') {
@@ -196,36 +207,66 @@ fn resolve_method_call(
 
     let method = call.rsplit('.').next()?;
     let candidates = name_to_ids.get(method)?;
-    pick_best_candidate(candidates, caller_file)
+    pick_best_candidate(candidates, caller_file, caller_crate)
 }
 
-/// Resolve path-style calls by stripping the first component.
+/// Resolve path-style calls by stripping the first component, restricted to the
+/// caller's own crate.
+///
+/// Stripping the call's crate prefix can otherwise match a same-named unit in a
+/// sibling crate: `mdlr_extract_ts::visitor::make_span` (a method whose real id
+/// is `…::UnitExtractor::make_span`, so it misses exact match) strips to
+/// `visitor::make_span`, which uniquely matches *mdlr_extract_rust*'s free
+/// function — inflating that unit's `fan_in` with foreign callers. Requiring the
+/// candidate to share the caller's crate prevents the cross-crate leak.
 fn resolve_path_call(
     call: &str,
+    caller_crate: &str,
     name_to_ids: &HashMap<String, Vec<String>>,
 ) -> Option<String> {
     let idx = call.find("::")?;
     let without_prefix = &call[idx + 2..];
     let candidates = name_to_ids.get(without_prefix)?;
 
-    if candidates.len() == 1 {
-        return Some(candidates[0].clone());
+    let mut same_crate =
+        candidates.iter().filter(|c| crate_of(c) == caller_crate);
+    let first = same_crate.next()?;
+    // Ambiguous even within the crate — don't guess.
+    if same_crate.next().is_some() {
+        return None;
     }
-    None
+    Some(first.clone())
 }
 
-/// Pick the best candidate from a list, preferring same-file matches.
+/// The crate segment of a unit id — everything before the first `::`.
+fn crate_of(id: &str) -> &str {
+    id.split("::").next().unwrap_or(id)
+}
+
+/// Pick the best candidate from a list, preferring same-file, then same-crate
+/// matches. Without the same-crate step, a short name shared across the sibling
+/// extractor crates (e.g. `make_span`, `count_params`) resolves to an arbitrary
+/// crate's unit, inflating that unit's `fan_in` with foreign callers.
 fn pick_best_candidate(
     candidates: &[String],
     caller_file: &str,
+    caller_crate: &str,
 ) -> Option<String> {
     if candidates.len() == 1 {
         return Some(candidates[0].clone());
     }
 
-    // Multiple matches - prefer same file
+    // Prefer a candidate in the caller's own file (only bites when ids are
+    // file-path based; harmless otherwise).
     for candidate in candidates {
         if candidate.starts_with(caller_file) {
+            return Some(candidate.clone());
+        }
+    }
+
+    // Then prefer a candidate in the caller's own crate.
+    for candidate in candidates {
+        if crate_of(candidate) == caller_crate {
             return Some(candidate.clone());
         }
     }
@@ -281,6 +322,42 @@ mod tests {
         let units = vec![make_unit("test::foo", vec!["foo"])];
         let graph = build(units);
         assert!(graph.edges.is_empty());
+    }
+
+    #[test]
+    fn test_path_call_does_not_leak_across_crates() {
+        // `crate_b` calls its own `visitor::make_span` (a method, so the exact
+        // id misses); stripping the crate prefix yields `visitor::make_span`,
+        // which only matches crate_a's free function. That cross-crate match
+        // must NOT create an edge (it would inflate crate_a's fan_in).
+        let units = vec![
+            make_unit("crate_b::caller", vec!["crate_b::visitor::make_span"]),
+            make_unit("crate_a::visitor::make_span", vec![]),
+        ];
+        let graph = build(units);
+        assert!(
+            !graph.edges.iter().any(|e| e.to == "crate_a::visitor::make_span"),
+            "cross-crate path resolution should not create an edge"
+        );
+    }
+
+    #[test]
+    fn test_short_name_resolves_to_callers_own_crate() {
+        // `make_span` exists in two sibling crates; a bare-name call must
+        // resolve to the caller's own crate, not an arbitrary one (otherwise
+        // the other crate's make_span gets foreign fan_in).
+        let units = vec![
+            make_unit("crate_a::calls::extract", vec!["make_span"]),
+            make_unit("crate_a::visitor::make_span", vec![]),
+            make_unit("crate_b::visitor::make_span", vec![]),
+        ];
+        let graph = build(units);
+        let edge = graph
+            .edges
+            .iter()
+            .find(|e| e.from == "crate_a::calls::extract")
+            .expect("edge from caller");
+        assert_eq!(edge.to, "crate_a::visitor::make_span");
     }
 
     #[test]

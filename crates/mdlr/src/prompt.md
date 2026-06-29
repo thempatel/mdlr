@@ -53,7 +53,7 @@ mdlr metrics get cyclomatic
 - **fan_in**: Units depending on this. Very high = potential bottleneck
 - **function_size**: Lines of code in a function. Two-sided: high = hard to understand/test (split it); low (1-2 lines, flagged only when the function has exactly one caller) = a pass-through adding indirection without abstraction (inline it into its caller). Tiny functions with zero or multiple callers are never flagged — do not inline trait-required methods, public API accessors, or shared helpers
 - **file_loc**: Lines of code in a file. High = hard to navigate/maintain
-- **cyclomatic**: Branch complexity. High = hard to test/maintain
+- **cyclomatic**: Branch complexity. High = hard to test/maintain — but a high-cyclomatic unit whose cognitive stays low is a *Dispatcher* (flat breadth: one match/switch arm per variant, not nested logic) and is omitted from the listing; inspect it directly with `mdlr check <symbol>` if needed
 - **cognitive**: Nesting-aware complexity. High = hard to understand (penalizes deep nesting)
 - **lcom**: Lack of cohesion. High = struct should be split
 - **methods_per_struct**: Methods in a struct. High = too many responsibilities

@@ -86,6 +86,25 @@ Counts:
 | Poor | < 30 |
 | Critical | >= 30 |
 
+#### Dispatcher suppression
+
+A high cyclomatic count is only worth flagging when the branching has real
+depth. A unit with many branches but little nesting is a **Dispatcher** — one
+`match`/`switch` arm per enum or AST variant, each shallow. The branch count is
+breadth, not nested decision logic, so it is usually not a refactoring target.
+
+`mdlr check` detects Dispatchers and omits their cyclomatic from the global /
+top-k listing. A unit is a Dispatcher when its `cognitive` complexity sits
+below its `fair` threshold (cognitive is nesting-aware, so a low value means the
+branches are flat). Cyclomatic surfaces in the listing only for units that
+branch a lot **and** nest. This mirrors the [Delegator suppression](fan-out.md#delegator-suppression)
+that gates `fan_out`.
+
+This filtering applies to the ranked listing only. The value is always available
+for a specific unit via `mdlr check <symbol>`, regardless of Dispatcher status.
+The detection reads the computed `cognitive` value directly, so it still works
+when `cognitive` is in `disabled_metrics`.
+
 ### Max Scope Lines
 
 Measures the largest single scope block within each function. While `function_size` measures the overall length, `max_scope` catches functions where a single block (if body, match arm, loop body, closure) dominates — suggesting that block should be extracted into its own function.

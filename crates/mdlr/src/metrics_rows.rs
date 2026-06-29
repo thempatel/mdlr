@@ -254,6 +254,76 @@ impl<'a> DelegatorFilteredFanOutSpec<'a> {
     }
 }
 
+/// Specification for collecting `cyclomatic` with Dispatcher filtering.
+///
+/// A unit is a *Dispatcher* when its high `cyclomatic` is breadth, not depth:
+/// `cognitive` stays below its `fair` threshold (one `match`/`switch` arm per
+/// enum or AST variant, shallow). Such a high branch count is a flat dispatch
+/// rather than a refactoring target, so its row is suppressed in global/top-k
+/// output. In symbol-filter mode the value is always shown (mirrors
+/// [`DelegatorFilteredFanOutSpec`]). The gate never fires once `cognitive` is at
+/// `fair` or worse, so genuinely-nested units stay visible.
+///
+/// The `cognitive` lookup reads the computed distribution directly, so the gate
+/// works even when `cognitive` is in `disabled_metrics` (disabling is
+/// output-control, not compute-control). A symbol absent from the distribution
+/// is treated as 0 — i.e. low, a Dispatcher.
+pub(crate) struct DispatcherFilteredCyclomaticSpec<'a> {
+    pub(crate) distribution: &'a [(String, usize)],
+    pub(crate) thresholds: MetricThresholds,
+    cognitive: HashMap<&'a str, usize>,
+    cognitive_fair: f64,
+}
+
+impl<'a> DispatcherFilteredCyclomaticSpec<'a> {
+    fn new(
+        m: &'a MetricsBundle,
+        thresholds: MetricThresholds,
+        th: &HashMap<String, MetricThresholds>,
+    ) -> Self {
+        DispatcherFilteredCyclomaticSpec {
+            distribution: &m.complexity.cyclomatic.distribution,
+            thresholds,
+            cognitive: m
+                .complexity
+                .cognitive
+                .distribution
+                .iter()
+                .map(|(id, v)| (id.as_str(), *v))
+                .collect(),
+            cognitive_fair: th["cognitive"].fair,
+        }
+    }
+
+    fn is_dispatcher(&self, symbol: &str) -> bool {
+        let cog = self.cognitive.get(symbol).copied().unwrap_or(0);
+        (cog as f64) < self.cognitive_fair
+    }
+
+    /// In global mode (`require_non_dispatcher`) Dispatchers are dropped; in
+    /// symbol-filter mode the value is shown regardless. `cyclomatic <= 1`
+    /// units are boring (a single linear path) and produce no row.
+    fn score(
+        &self,
+        symbol: &str,
+        value: usize,
+        require_non_dispatcher: bool,
+    ) -> Option<ScoredRow> {
+        if value <= 1 {
+            return None;
+        }
+        if require_non_dispatcher && self.is_dispatcher(symbol) {
+            return None;
+        }
+        Some(ScoredRow::bucketed(
+            "cyclomatic",
+            symbol,
+            value,
+            &self.thresholds,
+        ))
+    }
+}
+
 /// Specification for collecting fan_in metric with hub filtering
 /// Only includes units that are hubs (high fan_in AND high fan_out)
 pub(crate) struct HubFilteredFanInSpec<'a> {
@@ -312,6 +382,7 @@ pub(crate) struct MetricSpecs<'a> {
     pub(crate) function_size_spec: Option<TwoSidedSizeSpec<'a>>,
     pub(crate) fan_in_spec: Option<HubFilteredFanInSpec<'a>>,
     pub(crate) fan_out_spec: Option<DelegatorFilteredFanOutSpec<'a>>,
+    pub(crate) cyclomatic_spec: Option<DispatcherFilteredCyclomaticSpec<'a>>,
 }
 
 impl<'a> MetricSpecs<'a> {
@@ -332,7 +403,6 @@ impl<'a> MetricSpecs<'a> {
         };
         let mut int_specs = vec![
             spec("params", &c.params.distribution, 0),
-            spec("cyclomatic", &c.cyclomatic.distribution, 1),
             spec("cognitive", &c.cognitive.distribution, 1),
             spec("max_scope", &c.max_scope.distribution, 0),
             spec(
@@ -363,12 +433,20 @@ impl<'a> MetricSpecs<'a> {
         let fan_out_spec = (!config.is_disabled("fan_out")).then(|| {
             DelegatorFilteredFanOutSpec::new(m, th["fan_out"].clone(), &th)
         });
+        let cyclomatic_spec = (!config.is_disabled("cyclomatic")).then(|| {
+            DispatcherFilteredCyclomaticSpec::new(
+                m,
+                th["cyclomatic"].clone(),
+                &th,
+            )
+        });
 
         MetricSpecs {
             int_specs,
             function_size_spec,
             fan_in_spec,
             fan_out_spec,
+            cyclomatic_spec,
         }
     }
 
@@ -377,6 +455,11 @@ impl<'a> MetricSpecs<'a> {
     fn collect(&self, filter: Option<&str>) -> Vec<ScoredRow> {
         let mut rows = Vec::new();
         if let Some(spec) = &self.fan_out_spec {
+            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
+                spec.score(s, v, filter.is_none())
+            });
+        }
+        if let Some(spec) = &self.cyclomatic_spec {
             collect_rows(spec.distribution, filter, &mut rows, |s, v| {
                 spec.score(s, v, filter.is_none())
             });
@@ -581,5 +664,47 @@ mod tests {
         // fan_out == 0 is always boring, in either mode.
         assert!(spec.score("delegator", 0, true).is_none());
         assert!(spec.score("delegator", 0, false).is_none());
+    }
+
+    fn cyclomatic_spec<'a>(
+        distribution: &'a [(String, usize)],
+        cognitive: &[(&'a str, usize)],
+    ) -> DispatcherFilteredCyclomaticSpec<'a> {
+        let th = Config::default().thresholds.by_name();
+        DispatcherFilteredCyclomaticSpec {
+            distribution,
+            thresholds: th["cyclomatic"].clone(),
+            cognitive: cognitive.iter().copied().collect(),
+            cognitive_fair: th["cognitive"].fair,
+        }
+    }
+
+    #[test]
+    fn dispatcher_cyclomatic_suppressed_in_global_only() {
+        let distribution =
+            vec![("dispatcher".to_string(), 30), ("nested".to_string(), 30)];
+        // cognitive: dispatcher low (flat breadth), nested high (real depth).
+        let spec = cyclomatic_spec(
+            &distribution,
+            &[("dispatcher", 2), ("nested", 25)],
+        );
+
+        // Global mode: high cyclomatic with low cognitive is a Dispatcher and
+        // is suppressed; high cognitive (real nesting) keeps it visible.
+        assert!(spec.score("dispatcher", 30, true).is_none());
+        assert!(spec.score("nested", 30, true).is_some());
+
+        // A symbol absent from the cognitive map reads as 0 -> low -> a
+        // Dispatcher -> suppressed.
+        assert!(spec.score("unknown", 30, true).is_none());
+
+        // Symbol-filter mode is exempt: the Dispatcher's value is still shown,
+        // with its real (Critical) bucket.
+        let row = spec.score("dispatcher", 30, false).unwrap();
+        assert_eq!(row.bucket, Bucket::Critical);
+
+        // cyclomatic <= 1 is always boring (single linear path), either mode.
+        assert!(spec.score("dispatcher", 1, true).is_none());
+        assert!(spec.score("nested", 1, false).is_none());
     }
 }

@@ -4,6 +4,7 @@ mod cognitive;
 mod field_access;
 mod path_util;
 mod scopes;
+mod test_crate;
 mod tokenizer;
 mod visitor;
 mod walk;
@@ -101,7 +102,12 @@ pub fn extract(
             .unwrap_or(0)
     });
 
-    for (source_path, units) in units_by_file {
+    for (source_path, mut units) in units_by_file {
+        // rust-analyzer names each integration-test/example/bench crate after
+        // its file stem, so ids like `extraction::extract` collide across
+        // packages; qualify them by the owning package (ADR-0005).
+        test_crate::qualify_test_units(&source_path, &mut units);
+
         let entry = FileCacheEntry {
             source_path: PathBuf::from(&source_path),
             units,
