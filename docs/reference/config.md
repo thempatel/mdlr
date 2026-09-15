@@ -72,6 +72,15 @@ thresholds:
       fair: 100
       poor: 200
 
+  # inlined_size uses the same bands as function_size.high: the value answers
+  # what function_size would say if the unit's exclusive helpers were folded
+  # back in, so the two must agree on what counts as large.
+  inlined_size:
+    excellent: 20
+    good: 50
+    fair: 100
+    poor: 200
+
   params:
     excellent: 3
     good: 5
@@ -138,6 +147,21 @@ thresholds:
     poor: 10
 ```
 
+### Inlined Size Gate
+
+`inlined_size` is reported only for a unit that absorbs several helpers nothing else calls. The width of that gate is what decides whether a row appears at all, and the value bands above do not affect it:
+
+```yaml
+inlined:
+  min_exclusive_fanout: 3
+```
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `min_exclusive_fanout` | 3 | Minimum direct helpers, each called by this unit and nothing else, before the row is listed |
+
+Raise it to 4 to report only the widest cases. Lower it to 2 and the metric starts listing ordinary two-helper decompositions, which is where the signal stops discriminating, so expect many more rows and more judgment calls. `mdlr check <symbol>` ignores the gate at any setting, and the value in force is echoed as `min_exclusive_fanout` in JSON output.
+
 ### Display Mode
 
 Control how metric values are displayed:
@@ -164,7 +188,7 @@ disabled_metrics:
   - uncov_branches
 ```
 
-Use the canonical metric names shown by `mdlr metrics ls` — `fan_in`, `fan_out`, `function_size`, `params`, `cyclomatic`, `cognitive`, `max_scope`, `methods_per_struct`, `lcom`, `file_loc`, `duplication_pct`, `dag_density`, `line_cov`, `uncov_branches`. Note these are the *metric* names, not the threshold keys: disable `fan_in`, not `fan_in_max`.
+Use the canonical metric names shown by `mdlr metrics ls` — `fan_in`, `fan_out`, `function_size`, `inlined_size`, `params`, `cyclomatic`, `cognitive`, `max_scope`, `methods_per_struct`, `lcom`, `file_loc`, `duplication_pct`, `dag_density`, `line_cov`, `uncov_branches`. Note these are the *metric* names, not the threshold keys: disable `fan_in`, not `fan_in_max`.
 
 Behavior:
 
@@ -193,12 +217,15 @@ The default thresholds are based on empirical observations of healthy codebases:
 |--------|-----------|------|------|------|----------|
 | function_size (high side) | < 20 | < 50 | < 100 | < 200 | >= 200 |
 | function_size (low side) | >= 5 | 4 | 3 | <= 2 | unreachable |
+| inlined_size | < 20 | < 50 | < 100 | < 200 | >= 200 |
 | params | < 3 | < 5 | < 7 | < 10 | >= 10 |
-
-`function_size` is two-sided — a value gets the worse of its two side buckets. The low side only applies to functions with exactly one visible caller (`fan_in == 1`); see [Complexity Metrics](../metrics/complexity.md) for details.
 | cyclomatic | < 5 | < 10 | < 20 | < 30 | >= 30 |
 | cognitive | < 5 | < 10 | < 15 | < 25 | >= 25 |
 | max_scope | < 15 | < 30 | < 50 | < 100 | >= 100 |
+
+`function_size` is two-sided — a value gets the worse of its two side buckets. The low side only applies to functions with exactly one visible caller (`fan_in == 1`); see [Complexity Metrics](../metrics/complexity.md) for details.
+
+`inlined_size` shares the high-side `function_size` bands, but a row only appears when the unit absorbs at least `inlined.min_exclusive_fanout` direct helpers nothing else calls and its own `function_size` is still below `fair`. Lowering the value bands does not widen that gate; lower `inlined.min_exclusive_fanout` instead.
 
 ### File Metrics
 

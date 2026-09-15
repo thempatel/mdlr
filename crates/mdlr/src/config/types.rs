@@ -95,6 +95,7 @@ pub struct ThresholdsConfig {
     pub fan_out_max: MetricThresholds,
     pub fan_out_mean: MetricThresholds,
     pub function_size: TwoSidedThresholds,
+    pub inlined_size: MetricThresholds,
     pub params: MetricThresholds,
     pub cyclomatic: MetricThresholds,
     pub cognitive: MetricThresholds,
@@ -134,6 +135,11 @@ const DEFAULT_THRESHOLDS: ThresholdsConfig = ThresholdsConfig {
     fan_out_max: mt(3.0, 5.0, 8.0, 12.0),
     fan_out_mean: mt(0.5, 1.0, 2.0, 3.0),
     function_size: DEFAULT_FUNCTION_SIZE,
+    // Deliberately the same bands as `function_size.high`: the value answers
+    // "what would function_size say if this were put back together", so the
+    // two must agree on what counts as large. The gate, not the table, is
+    // what keeps this from restating function_size.
+    inlined_size: mt(20.0, 50.0, 100.0, 200.0),
     params: mt(3.0, 5.0, 7.0, 10.0),
     cyclomatic: mt(5.0, 10.0, 20.0, 30.0),
     cognitive: mt(5.0, 10.0, 15.0, 25.0),
@@ -206,6 +212,23 @@ impl Default for HubThresholds {
     }
 }
 
+/// `inlined_size` gate thresholds
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlinedThresholds {
+    /// Minimum helpers nothing else calls that a unit must absorb before its
+    /// `inlined_size` is reported (default: 4)
+    pub min_exclusive_fanout: usize,
+}
+
+impl Default for InlinedThresholds {
+    fn default() -> Self {
+        Self {
+            min_exclusive_fanout:
+                mdlr_metrics::DEFAULT_INLINED_MIN_EXCLUSIVE_FANOUT,
+        }
+    }
+}
+
 /// CPD (Copy-Paste Detection) configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CpdConfig {
@@ -227,6 +250,7 @@ pub const METRIC_NAMES: &[&str] = &[
     "fan_in",
     "fan_out",
     "function_size",
+    "inlined_size",
     "params",
     "cyclomatic",
     "cognitive",
@@ -248,6 +272,8 @@ pub struct Config {
     pub display: DisplayConfig,
     #[serde(default)]
     pub hub: HubThresholds,
+    #[serde(default)]
+    pub inlined: InlinedThresholds,
     #[serde(default)]
     pub cpd: CpdConfig,
     /// Canonical metric names to suppress from `check` output. Disabling is an

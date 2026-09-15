@@ -26,6 +26,7 @@ fn metrics_bundle(computed: &ComputedMetrics) -> MetricsBundle<'_> {
         complexity: &computed.complexity,
         struct_metrics: &computed.struct_metrics,
         file_loc: &computed.file_loc,
+        inlined: &computed.inlined,
         duplication: &computed.duplication,
         coverage: computed.coverage.as_ref(),
     }
@@ -200,6 +201,36 @@ fn build_metrics_json(
         ),
     });
 
+    // Only gated entries are emitted. Every other metric ships its full
+    // distribution and lets the text layer suppress rows, but an ungated
+    // `inlined_size` reports a chain of single-caller steps as one enormous
+    // unit — the false positive the gate exists to remove. Shipping that in
+    // JSON would hand it straight to whatever reads the JSON.
+    let bundle = metrics_bundle(computed);
+    let specs = MetricSpecs::new(&bundle, config);
+    let reported: Vec<(String, usize)> = specs
+        .gated
+        .iter()
+        .find(|s| s.name == "inlined_size")
+        .map(|spec| {
+            computed
+                .inlined
+                .inlined_size
+                .distribution
+                .iter()
+                .filter(|(id, _)| !spec.suppressed(id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let inlined_json = serde_json::json!({
+        "min_exclusive_fanout": config.inlined.min_exclusive_fanout,
+        "distribution": distribution_json(
+            &reported, "unit", "inlined_size", &units,
+            |_, v| by_name["inlined_size"].evaluate(v as f64),
+        ),
+    });
+
     let mut metrics = serde_json::json!({
         "dag_density": build_bucketed_json(&bucketed.dag_density),
         "fan_in": build_fan_metrics_json(&bucketed.fan_in, &computed.structural.fan_in.distribution, &by_name["fan_in"], &units),
@@ -207,6 +238,7 @@ fn build_metrics_json(
         "complexity": build_complexity_json(&computed.complexity, config, &units, &fan_in),
         "struct": build_struct_json(&computed.struct_metrics, config, &units),
         "file_loc": build_file_loc_json(&computed.file_loc, config, &units),
+        "inlined_size": inlined_json,
         "duplication": duplication_json,
     });
     if let Some(cov) = computed.coverage.as_ref() {
@@ -230,6 +262,7 @@ fn prune_disabled_metrics(
         ("fan_in", "fan_in"),
         ("fan_out", "fan_out"),
         ("file_loc", "file_loc"),
+        ("inlined_size", "inlined_size"),
         ("duplication_pct", "duplication"),
     ];
     // (metric name, composite parent key, sub-field key)

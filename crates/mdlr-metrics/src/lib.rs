@@ -2,6 +2,7 @@ pub mod complexity;
 pub mod coverage;
 pub mod display;
 pub mod file_loc;
+pub mod inlined;
 pub mod struct_metrics;
 pub mod structural;
 pub mod thresholds;
@@ -15,6 +16,10 @@ pub use display::{
     MetricsDisplay,
 };
 pub use file_loc::FileLocMetrics;
+pub use inlined::{
+    DEFAULT_INLINED_MIN_EXCLUSIVE_FANOUT, InlinedMetrics,
+    compute as compute_inlined,
+};
 pub use struct_metrics::{LcomMetrics, MethodsPerStruct, StructMetrics};
 pub use structural::{
     DEFAULT_HUB_MIN_FAN_IN, DEFAULT_HUB_MIN_FAN_OUT, FanMetrics, HubInfo,

@@ -21,6 +21,7 @@ mdlr computes structural metrics that help you understand the modularity and cou
 | [Cyclomatic Complexity](complexity.md#cyclomatic-complexity) | Number of decision paths through a function |
 | [Cognitive Complexity](cognitive-complexity.md) | Nesting-aware complexity that penalizes deeply nested code |
 | [Max Scope Lines](complexity.md#max-scope-lines) | Largest single scope block within a function |
+| [Inlined Size](inlined-size.md) | Lines a function would have if every helper only it calls were folded back in |
 
 ### File Metrics
 

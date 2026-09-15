@@ -15,8 +15,8 @@ use crate::progress::CheckProgress;
 use crate::timing;
 use mdlr_core::{Graph, Unit, UnitKind, build_with_progress as build_graph};
 use mdlr_metrics::{
-    ComplexityMetrics, CoverageMetrics, FileLocMetrics, LcovData,
-    StructMetrics, StructuralMetrics,
+    ComplexityMetrics, CoverageMetrics, FileLocMetrics, InlinedMetrics,
+    LcovData, StructMetrics, StructuralMetrics, compute_inlined,
     compute_with_hub_thresholds as compute_structural,
 };
 
@@ -32,6 +32,7 @@ pub(crate) struct ComputedMetrics {
     pub(crate) complexity: ComplexityMetrics,
     pub(crate) struct_metrics: StructMetrics,
     pub(crate) file_loc: FileLocMetrics,
+    pub(crate) inlined: InlinedMetrics,
     pub(crate) duplication: mdlr_cpd::DuplicationMetrics,
     pub(crate) coverage: Option<CoverageMetrics>,
 }
@@ -163,7 +164,7 @@ fn compute_all_metrics(
     bar.finish();
 
     let total = graph.units.len() as u64;
-    let bar = progress.start_bar("Computing metrics", total * 4);
+    let bar = progress.start_bar("Computing metrics", total * 5);
     let structural = compute_structural(
         &graph,
         config.hub.min_fan_in,
@@ -179,6 +180,8 @@ fn compute_all_metrics(
     let file_loc = FileLocMetrics::compute_with_progress(&graph, |i| {
         bar.set_position(total * 3 + i as u64)
     });
+    let inlined = compute_inlined(&graph);
+    bar.set_position(total * 5);
     bar.finish();
 
     // CPD is the expensive pass; skip it entirely when duplication_pct is off.
@@ -222,6 +225,7 @@ fn compute_all_metrics(
         complexity,
         struct_metrics,
         file_loc,
+        inlined,
         duplication,
         coverage,
     }

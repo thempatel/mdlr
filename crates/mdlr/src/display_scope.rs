@@ -53,6 +53,10 @@ pub(crate) fn apply(computed: &mut ComputedMetrics, scope: &DisplayScope) {
     retain(&mut st.lcom.distribution, units);
     (st.lcom.max, st.lcom.mean) = max_mean(&st.lcom.distribution);
 
+    // `exclusive_fanout` is a gate signal, not a listing: it stays project-wide
+    // so a helper whose parent is outside the diff still reads as exclusive.
+    computed.inlined.inlined_size.retain_ids(units);
+
     let fl = &mut computed.file_loc;
     retain(&mut fl.distribution, &scope.files);
     (fl.max, fl.mean) = max_mean(&fl.distribution);

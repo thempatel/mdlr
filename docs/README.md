@@ -158,6 +158,7 @@ Use the canonical names from `mdlr metrics ls`. See [Configuration](reference/co
 - [Fan-In](metrics/fan-in.md) — how many units depend on each unit
 - [Fan-Out](metrics/fan-out.md) — how many units each unit depends on
 - [Complexity](metrics/complexity.md) — function size, parameters, cyclomatic complexity, max scope
+- [Inlined Size](metrics/inlined-size.md) — lines a function would have with its exclusive helpers folded back in
 - [Cognitive Complexity](metrics/cognitive-complexity.md) — nesting-aware complexity metric
 - [File LOC](metrics/file-loc.md) — lines of code per file
 - [Impl Metrics](metrics/impl-metrics.md) — methods per struct, LCOM

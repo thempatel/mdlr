@@ -5,7 +5,7 @@ use crate::config::{Bucket, Config, MetricThresholds, TwoSidedThresholds};
 use mdlr_cpd::DuplicationMetrics;
 use mdlr_metrics::{
     ComplexityMetrics, CoverageMetrics, FileLocMetrics, HubInfo,
-    SortDirection, StructMetrics, StructuralMetrics,
+    InlinedMetrics, SortDirection, StructMetrics, StructuralMetrics,
 };
 use std::collections::HashMap;
 
@@ -55,6 +55,7 @@ pub struct MetricsBundle<'a> {
     pub complexity: &'a ComplexityMetrics,
     pub struct_metrics: &'a StructMetrics,
     pub file_loc: &'a FileLocMetrics,
+    pub inlined: &'a InlinedMetrics,
     pub duplication: &'a DuplicationMetrics,
     /// Present iff the user passed `--cov`.
     pub coverage: Option<&'a CoverageMetrics>,
@@ -211,6 +212,27 @@ enum Suppression<'a> {
     /// Not a hub (`fan_in`): a high incoming count only signals a bottleneck
     /// where `fan_out` is high too.
     NotHub { hubs: &'a HashMap<String, HubInfo> },
+    /// Bulk that is not hidden (`inlined_size`). Two ways to fail:
+    ///
+    /// 1. *Narrow*: the unit absorbs fewer than `min_exclusive_fanout`
+    ///    helpers nothing else calls.
+    ///    Absorption alone cannot tell a unit spread across ten helpers from a
+    ///    chain of steps that happen to call each other — both are
+    ///    single-caller trees. Width can: dispersal is one parent with many
+    ///    leaves, a chain is one leaf per level. Without this the first stage
+    ///    of any pipeline reads as the size of the whole pipeline.
+    /// 2. *Already visible*: the unit's own `function_size` has reached
+    ///    `fair`, so the listing is reporting it anyway. `inlined_size` exists
+    ///    for the unit whose `function_size` looks healthy while the work it
+    ///    owns is not — a 26-line function holding 112 lines of exclusive
+    ///    helpers. On a unit that is simply large it restates `function_size`
+    ///    in a weaker bucket, which is noise.
+    NotHiddenBulk {
+        exclusive_fanout: &'a HashMap<String, usize>,
+        min_exclusive_fanout: usize,
+        own_size: HashMap<&'a str, usize>,
+        size_fair: f64,
+    },
 }
 
 impl Suppression<'_> {
@@ -232,6 +254,20 @@ impl Suppression<'_> {
                 below(cognitive, *cognitive_fair)
             }
             Suppression::NotHub { hubs } => !hubs.contains_key(symbol),
+            Suppression::NotHiddenBulk {
+                exclusive_fanout,
+                min_exclusive_fanout,
+                own_size,
+                size_fair,
+            } => {
+                let narrow =
+                    exclusive_fanout.get(symbol).copied().unwrap_or(0)
+                        < *min_exclusive_fanout;
+                let already_visible =
+                    own_size.get(symbol).copied().unwrap_or(0) as f64
+                        >= *size_fair;
+                narrow || already_visible
+            }
         }
     }
 }
@@ -252,6 +288,12 @@ pub(crate) struct GatedSpec<'a> {
 impl<'a> GatedSpec<'a> {
     fn by_symbol(dist: &'a [(String, usize)]) -> HashMap<&'a str, usize> {
         dist.iter().map(|(id, v)| (id.as_str(), *v)).collect()
+    }
+
+    /// Whether this spec's gate hides `symbol` from the global listing. The
+    /// JSON layer reads this so the gate policy lives in one place.
+    pub(crate) fn suppressed(&self, symbol: &str) -> bool {
+        self.suppression.suppresses(symbol)
     }
 
     /// In global mode (`require_ungated`) suppressed units are dropped; in
@@ -374,6 +416,17 @@ impl<'a> MetricSpecs<'a> {
             ),
             ("params", &c.params.distribution[..], Some(0), low_complexity()),
             (
+                "inlined_size",
+                &m.inlined.inlined_size.distribution[..],
+                Some(0),
+                Suppression::NotHiddenBulk {
+                    exclusive_fanout: &m.inlined.exclusive_fanout,
+                    min_exclusive_fanout: config.inlined.min_exclusive_fanout,
+                    own_size: GatedSpec::by_symbol(&c.size.distribution),
+                    size_fair: config.thresholds.function_size.high.fair,
+                },
+            ),
+            (
                 "fan_in",
                 &m.structural.fan_in.distribution[..],
                 None,
@@ -432,6 +485,7 @@ const METRIC_ORDER: &[&str] = &[
     "fan_out",
     "fan_in",
     "function_size",
+    "inlined_size",
     "params",
     "cyclomatic",
     "cognitive",
@@ -557,6 +611,141 @@ mod tests {
         assert!(!by_symbol.contains_key("shared_getter"));
         // The high side is unaffected by the gate.
         assert_eq!(by_symbol["big"], Bucket::Critical);
+    }
+
+    /// The three cases the `inlined_size` gate has to separate. Only the
+    /// first is the metric's reason to exist: `function_size` reads healthy
+    /// while the unit exclusively owns four times its own line count.
+    #[test]
+    fn inlined_size_reports_only_hidden_bulk() {
+        let config = Config::default();
+        let thresholds = &config.thresholds;
+        let distribution = vec![
+            ("dispersed".to_string(), 310),
+            ("chain_head".to_string(), 364),
+            ("simply_large".to_string(), 363),
+        ];
+        let exclusive_fanout = HashMap::from([
+            ("dispersed".to_string(), 10),
+            // A chain absorbs just as much, one helper at a time.
+            ("chain_head".to_string(), 1),
+            ("simply_large".to_string(), 5),
+        ]);
+        let spec = GatedSpec {
+            name: "inlined_size",
+            distribution: &distribution,
+            thresholds: thresholds.inlined_size.clone(),
+            boring_threshold: Some(0),
+            suppression: Suppression::NotHiddenBulk {
+                exclusive_fanout: &exclusive_fanout,
+                min_exclusive_fanout: config.inlined.min_exclusive_fanout,
+                own_size: HashMap::from([
+                    ("dispersed", 30),
+                    ("chain_head", 26),
+                    ("simply_large", 346),
+                ]),
+                size_fair: thresholds.function_size.high.fair,
+            },
+        };
+
+        let mut rows = Vec::new();
+        collect_rows(spec.distribution, None, &mut rows, |s, v| {
+            spec.score(s, v, true)
+        });
+        let symbols: Vec<&str> =
+            rows.iter().map(|r| r.symbol.as_str()).collect();
+
+        assert_eq!(symbols, ["dispersed"]);
+        assert_eq!(rows[0].bucket, Bucket::Critical);
+
+        // Under a symbol filter the gate stands down and the value is shown.
+        let mut all = Vec::new();
+        collect_rows(spec.distribution, None, &mut all, |s, v| {
+            spec.score(s, v, false)
+        });
+        assert_eq!(all.len(), 3);
+    }
+
+    /// The gate width is configuration, not a constant. A parent with five
+    /// exclusive helpers is narrow under 6 and wide under 5. Both sit off the
+    /// default, so neither assertion can pass by accidentally matching it.
+    ///
+    /// This goes through `MetricSpecs::new` rather than hand-building a
+    /// `GatedSpec`, so what is under test is the wiring from the config key to
+    /// the gate. A hand-built spec would pass even if `new` read the wrong
+    /// field.
+    #[test]
+    fn inlined_size_width_comes_from_config() {
+        use mdlr_core::{Edge, EdgeKind, Graph, Span, Unit, UnitKind};
+
+        fn unit(id: &str, end_line: usize) -> Unit {
+            Unit {
+                id: id.to_string(),
+                kind: UnitKind::Function,
+                file: "a.rs".into(),
+                span: Span {
+                    start_line: 1,
+                    start_col: 0,
+                    end_line,
+                    end_col: 0,
+                },
+                reads: vec![],
+                writes: vec![],
+                calls: vec![],
+                tags: vec![],
+                params: 0,
+                branches: 0,
+                max_scope_lines: 0,
+                parent: None,
+                cognitive_complexity: 0,
+                partial: false,
+            }
+        }
+
+        let mut graph = Graph::new();
+        graph.add_unit(unit("parent", 30));
+        for i in 0..5 {
+            let id = format!("helper{i}");
+            graph.add_unit(unit(&id, 40));
+            graph.add_edge(Edge {
+                from: "parent".to_string(),
+                to: id,
+                kind: EdgeKind::Calls,
+            });
+        }
+
+        let structural = mdlr_metrics::compute(&graph);
+        let complexity = ComplexityMetrics::compute(&graph);
+        let struct_metrics = StructMetrics::compute(&graph);
+        let file_loc = FileLocMetrics::compute(&graph);
+        let inlined = mdlr_metrics::compute_inlined(&graph);
+        let duplication = DuplicationMetrics::default();
+        let bundle = MetricsBundle {
+            structural: &structural,
+            complexity: &complexity,
+            struct_metrics: &struct_metrics,
+            file_loc: &file_loc,
+            inlined: &inlined,
+            duplication: &duplication,
+            coverage: None,
+        };
+
+        assert_eq!(inlined.exclusive_fanout["parent"], 5);
+
+        let suppressed_at = |width: usize| {
+            let mut config = Config::default();
+            config.inlined.min_exclusive_fanout = width;
+            let specs = MetricSpecs::new(&bundle, &config);
+            specs
+                .gated
+                .iter()
+                .find(|s| s.name == "inlined_size")
+                .expect("inlined_size spec")
+                .suppressed("parent")
+        };
+
+        assert!(suppressed_at(6), "five helpers is narrow under a width of 6");
+        assert!(!suppressed_at(5), "a configured 5 admits the same unit");
     }
 
     /// A spec gated on both complexities being low: `fan_out` (Delegator)

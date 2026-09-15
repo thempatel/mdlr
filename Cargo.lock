@@ -1272,7 +1272,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "mdlr-core",
+ "mdlr-extract-ts",
  "serde",
+ "serde_json",
  "tempfile",
  "tracing",
 ]
