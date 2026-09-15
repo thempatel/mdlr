@@ -12,7 +12,6 @@ use std::collections::HashMap;
 /// A metric row: (metric_name, symbol, value, bucket)
 pub type MetricRow = (String, String, String, String);
 
-/// Internal representation with bucket for sorting
 struct ScoredRow {
     metric_name: String,
     symbol: String,
@@ -21,8 +20,6 @@ struct ScoredRow {
 }
 
 impl ScoredRow {
-    /// Build a row for `symbol`/`value`, bucketed by a higher-is-worse
-    /// threshold table. Shared by the threshold-gated specs (fan_in, fan_out).
     fn bucketed(
         metric_name: &str,
         symbol: &str,
@@ -37,12 +34,11 @@ impl ScoredRow {
         }
     }
 
-    /// Convert to MetricRow for output
     fn into_row(self) -> MetricRow {
         (self.metric_name, self.symbol, self.value, self.bucket.to_string())
     }
 
-    /// Severity score for sorting (higher = worse)
+    /// Higher = worse; rows sort descending on this.
     fn severity(&self) -> u8 {
         match self.bucket {
             Bucket::Excellent => 0,
@@ -54,7 +50,6 @@ impl ScoredRow {
     }
 }
 
-/// Bundle of all computed metrics for collection
 pub struct MetricsBundle<'a> {
     pub structural: &'a StructuralMetrics,
     pub complexity: &'a ComplexityMetrics,
@@ -66,8 +61,7 @@ pub struct MetricsBundle<'a> {
 }
 
 /// Walk a distribution, optionally restricted to one symbol, pushing
-/// whatever rows `score` produces. The single collection loop shared by
-/// every spec type and both display modes (global and symbol-filtered).
+/// whatever rows `score` produces.
 fn collect_rows(
     distribution: &[(String, usize)],
     filter: Option<&str>,
@@ -173,8 +167,7 @@ impl<'a> TwoSidedSizeSpec<'a> {
     }
 
     fn score(&self, symbol: &str, value: usize) -> Option<ScoredRow> {
-        // Boring = 1-liners that are exempt from the low side (the high-side
-        // `value > 1` rule that applied before the metric became two-sided).
+        // A 1-liner exempt from the low side has nothing left to flag.
         if value <= 1 && !self.low_side_applies(symbol) {
             return None;
         }
@@ -187,233 +180,95 @@ impl<'a> TwoSidedSizeSpec<'a> {
     }
 }
 
-/// Specification for collecting `fan_out` with Delegator filtering.
+/// Why a gated metric's row may be suppressed from global/top-k output.
 ///
-/// A unit is a *Delegator* when its high `fan_out` is accompanied by low
-/// internal complexity — both `cyclomatic` and `cognitive` sit below their
-/// `fair` thresholds. Such a unit just forwards work to many callees, so a
-/// high `fan_out` is usually good design rather than a refactoring target;
-/// its row is suppressed in global/top-k output. In symbol-filter mode the
-/// value is always shown (mirrors [`HubFilteredFanInSpec`]).
+/// Each variant answers the same question — is this unit's high value breadth
+/// rather than real work? — but reads a different confirming signal. Gates
+/// apply only to global listings; `mdlr check <symbol>` always shows the value.
 ///
-/// The complexity lookups read the computed `cyclomatic`/`cognitive`
-/// distributions directly, so the gate works even when those metrics are in
-/// `disabled_metrics` (disabling is output-control, not compute-control). A
-/// symbol absent from a distribution is treated as 0 — i.e. low.
-pub(crate) struct DelegatorFilteredFanOutSpec<'a> {
-    pub(crate) distribution: &'a [(String, usize)],
-    pub(crate) thresholds: MetricThresholds,
-    cyclomatic: HashMap<&'a str, usize>,
-    cognitive: HashMap<&'a str, usize>,
-    cyclomatic_fair: f64,
-    cognitive_fair: f64,
+/// The complexity lookups read the computed distributions directly, so a gate
+/// works even when its confirming metric is in `disabled_metrics` (disabling is
+/// output-control, not compute-control). A symbol absent from a distribution is
+/// treated as 0 — i.e. low.
+enum Suppression<'a> {
+    /// A *Delegator* (`fan_out`) or a *wide signature* (`params`): both
+    /// `cyclomatic` and `cognitive` sit below their `fair` thresholds, so the
+    /// unit forwards work to many callees or threads passive inputs (context
+    /// handles, injected dependencies, CLI flags, construction fields) rather
+    /// than doing anything branchy itself. Usually good design.
+    LowComplexity {
+        cyclomatic: HashMap<&'a str, usize>,
+        cognitive: HashMap<&'a str, usize>,
+        cyclomatic_fair: f64,
+        cognitive_fair: f64,
+    },
+    /// A *Dispatcher* (`cyclomatic`): `cognitive` stays below its
+    /// `fair` threshold, so the branch count is flat breadth — one `match`
+    /// arm per enum or AST variant — not nested decision logic. The gate never
+    /// fires once `cognitive` reaches `fair`, so genuinely-nested units stay
+    /// visible.
+    LowCognitive { cognitive: HashMap<&'a str, usize>, cognitive_fair: f64 },
+    /// Not a hub (`fan_in`): a high incoming count only signals a bottleneck
+    /// where `fan_out` is high too.
+    NotHub { hubs: &'a HashMap<String, HubInfo> },
 }
 
-impl<'a> DelegatorFilteredFanOutSpec<'a> {
-    fn new(
-        m: &'a MetricsBundle,
-        thresholds: MetricThresholds,
-        th: &HashMap<String, MetricThresholds>,
-    ) -> Self {
-        let by_symbol = |dist: &'a [(String, usize)]| {
-            dist.iter().map(|(id, v)| (id.as_str(), *v)).collect()
+impl Suppression<'_> {
+    fn suppresses(&self, symbol: &str) -> bool {
+        let below = |dist: &HashMap<&str, usize>, fair: f64| {
+            (dist.get(symbol).copied().unwrap_or(0) as f64) < fair
         };
-        DelegatorFilteredFanOutSpec {
-            distribution: &m.structural.fan_out.distribution,
-            thresholds,
-            cyclomatic: by_symbol(&m.complexity.cyclomatic.distribution),
-            cognitive: by_symbol(&m.complexity.cognitive.distribution),
-            cyclomatic_fair: th["cyclomatic"].fair,
-            cognitive_fair: th["cognitive"].fair,
+        match self {
+            Suppression::LowComplexity {
+                cyclomatic,
+                cognitive,
+                cyclomatic_fair,
+                cognitive_fair,
+            } => {
+                below(cyclomatic, *cyclomatic_fair)
+                    && below(cognitive, *cognitive_fair)
+            }
+            Suppression::LowCognitive { cognitive, cognitive_fair } => {
+                below(cognitive, *cognitive_fair)
+            }
+            Suppression::NotHub { hubs } => !hubs.contains_key(symbol),
         }
-    }
-
-    fn is_delegator(&self, symbol: &str) -> bool {
-        let cyc = self.cyclomatic.get(symbol).copied().unwrap_or(0);
-        let cog = self.cognitive.get(symbol).copied().unwrap_or(0);
-        (cyc as f64) < self.cyclomatic_fair
-            && (cog as f64) < self.cognitive_fair
-    }
-
-    /// In global mode (`require_non_delegator`) Delegators are dropped; in
-    /// symbol-filter mode the value is shown regardless. `fan_out == 0`
-    /// units are always boring and produce no row.
-    fn score(
-        &self,
-        symbol: &str,
-        value: usize,
-        require_non_delegator: bool,
-    ) -> Option<ScoredRow> {
-        if value == 0 {
-            return None;
-        }
-        if require_non_delegator && self.is_delegator(symbol) {
-            return None;
-        }
-        Some(ScoredRow::bucketed("fan_out", symbol, value, &self.thresholds))
     }
 }
 
-/// Specification for collecting `cyclomatic` with Dispatcher filtering.
-///
-/// A unit is a *Dispatcher* when its high `cyclomatic` is breadth, not depth:
-/// `cognitive` stays below its `fair` threshold (one `match`/`switch` arm per
-/// enum or AST variant, shallow). Such a high branch count is a flat dispatch
-/// rather than a refactoring target, so its row is suppressed in global/top-k
-/// output. In symbol-filter mode the value is always shown (mirrors
-/// [`DelegatorFilteredFanOutSpec`]). The gate never fires once `cognitive` is at
-/// `fair` or worse, so genuinely-nested units stay visible.
-///
-/// The `cognitive` lookup reads the computed distribution directly, so the gate
-/// works even when `cognitive` is in `disabled_metrics` (disabling is
-/// output-control, not compute-control). A symbol absent from the distribution
-/// is treated as 0 — i.e. low, a Dispatcher.
-pub(crate) struct DispatcherFilteredCyclomaticSpec<'a> {
+/// A metric whose row must clear a second signal before it reaches the global
+/// listing — see [`Suppression`] for what each gate reads and why.
+pub(crate) struct GatedSpec<'a> {
+    pub(crate) name: &'static str,
     pub(crate) distribution: &'a [(String, usize)],
     pub(crate) thresholds: MetricThresholds,
-    cognitive: HashMap<&'a str, usize>,
-    cognitive_fair: f64,
+    /// Values at or below this are boring and produce no row. `None` for
+    /// `fan_in`, where every value is worth reporting once the hub gate has
+    /// had its say.
+    boring_threshold: Option<usize>,
+    suppression: Suppression<'a>,
 }
 
-impl<'a> DispatcherFilteredCyclomaticSpec<'a> {
-    fn new(
-        m: &'a MetricsBundle,
-        thresholds: MetricThresholds,
-        th: &HashMap<String, MetricThresholds>,
-    ) -> Self {
-        DispatcherFilteredCyclomaticSpec {
-            distribution: &m.complexity.cyclomatic.distribution,
-            thresholds,
-            cognitive: m
-                .complexity
-                .cognitive
-                .distribution
-                .iter()
-                .map(|(id, v)| (id.as_str(), *v))
-                .collect(),
-            cognitive_fair: th["cognitive"].fair,
-        }
+impl<'a> GatedSpec<'a> {
+    fn by_symbol(dist: &'a [(String, usize)]) -> HashMap<&'a str, usize> {
+        dist.iter().map(|(id, v)| (id.as_str(), *v)).collect()
     }
 
-    fn is_dispatcher(&self, symbol: &str) -> bool {
-        let cog = self.cognitive.get(symbol).copied().unwrap_or(0);
-        (cog as f64) < self.cognitive_fair
-    }
-
-    /// In global mode (`require_non_dispatcher`) Dispatchers are dropped; in
-    /// symbol-filter mode the value is shown regardless. `cyclomatic <= 1`
-    /// units are boring (a single linear path) and produce no row.
+    /// In global mode (`require_ungated`) suppressed units are dropped; in
+    /// symbol-filter mode the value is shown regardless.
     fn score(
         &self,
         symbol: &str,
         value: usize,
-        require_non_dispatcher: bool,
+        require_ungated: bool,
     ) -> Option<ScoredRow> {
-        if value <= 1 {
+        if self.boring_threshold.is_some_and(|b| value <= b) {
             return None;
         }
-        if require_non_dispatcher && self.is_dispatcher(symbol) {
+        if require_ungated && self.suppression.suppresses(symbol) {
             return None;
         }
-        Some(ScoredRow::bucketed(
-            "cyclomatic",
-            symbol,
-            value,
-            &self.thresholds,
-        ))
-    }
-}
-
-/// Specification for collecting `params` with wide-signature filtering.
-///
-/// A unit has a *wide signature* when its high `params` count is breadth of
-/// passive inputs, not a behavioral-knob explosion: both `cyclomatic` and
-/// `cognitive` sit below their `fair` thresholds, so the parameters are
-/// threaded context handles, injected dependencies, CLI flags, or
-/// object-construction inputs rather than independent control inputs. Such a
-/// long signature is usually appropriate rather than a refactoring target, so
-/// its row is suppressed in global/top-k output. In symbol-filter mode the
-/// value is always shown (mirrors [`DelegatorFilteredFanOutSpec`]).
-///
-/// The complexity lookups read the computed `cyclomatic`/`cognitive`
-/// distributions directly, so the gate works even when those metrics are in
-/// `disabled_metrics` (disabling is output-control, not compute-control). A
-/// symbol absent from a distribution is treated as 0 — i.e. low.
-pub(crate) struct WideSignatureFilteredParamsSpec<'a> {
-    pub(crate) distribution: &'a [(String, usize)],
-    pub(crate) thresholds: MetricThresholds,
-    cyclomatic: HashMap<&'a str, usize>,
-    cognitive: HashMap<&'a str, usize>,
-    cyclomatic_fair: f64,
-    cognitive_fair: f64,
-}
-
-impl<'a> WideSignatureFilteredParamsSpec<'a> {
-    fn new(
-        m: &'a MetricsBundle,
-        thresholds: MetricThresholds,
-        th: &HashMap<String, MetricThresholds>,
-    ) -> Self {
-        let by_symbol = |dist: &'a [(String, usize)]| {
-            dist.iter().map(|(id, v)| (id.as_str(), *v)).collect()
-        };
-        WideSignatureFilteredParamsSpec {
-            distribution: &m.complexity.params.distribution,
-            thresholds,
-            cyclomatic: by_symbol(&m.complexity.cyclomatic.distribution),
-            cognitive: by_symbol(&m.complexity.cognitive.distribution),
-            cyclomatic_fair: th["cyclomatic"].fair,
-            cognitive_fair: th["cognitive"].fair,
-        }
-    }
-
-    fn is_wide_signature(&self, symbol: &str) -> bool {
-        let cyc = self.cyclomatic.get(symbol).copied().unwrap_or(0);
-        let cog = self.cognitive.get(symbol).copied().unwrap_or(0);
-        (cyc as f64) < self.cyclomatic_fair
-            && (cog as f64) < self.cognitive_fair
-    }
-
-    /// In global mode (`require_non_wide`) wide-signature units are dropped; in
-    /// symbol-filter mode the value is shown regardless. `params == 0` units
-    /// are always boring and produce no row.
-    fn score(
-        &self,
-        symbol: &str,
-        value: usize,
-        require_non_wide: bool,
-    ) -> Option<ScoredRow> {
-        if value == 0 {
-            return None;
-        }
-        if require_non_wide && self.is_wide_signature(symbol) {
-            return None;
-        }
-        Some(ScoredRow::bucketed("params", symbol, value, &self.thresholds))
-    }
-}
-
-/// Specification for collecting fan_in metric with hub filtering
-/// Only includes units that are hubs (high fan_in AND high fan_out)
-pub(crate) struct HubFilteredFanInSpec<'a> {
-    pub(crate) distribution: &'a [(String, usize)],
-    pub(crate) thresholds: MetricThresholds,
-    hubs: &'a HashMap<String, HubInfo>,
-}
-
-impl HubFilteredFanInSpec<'_> {
-    /// In global mode only hub units are shown (`require_hub`); in symbol
-    /// filter mode the value is always shown regardless of hub status.
-    fn score(
-        &self,
-        symbol: &str,
-        value: usize,
-        require_hub: bool,
-    ) -> Option<ScoredRow> {
-        if require_hub && !self.hubs.contains_key(symbol) {
-            return None;
-        }
-        Some(ScoredRow::bucketed("fan_in", symbol, value, &self.thresholds))
+        Some(ScoredRow::bucketed(self.name, symbol, value, &self.thresholds))
     }
 }
 
@@ -449,15 +304,13 @@ fn coverage_specs<'a>(
 pub(crate) struct MetricSpecs<'a> {
     pub(crate) int_specs: Vec<IntMetricSpec<'a>>,
     pub(crate) function_size_spec: Option<TwoSidedSizeSpec<'a>>,
-    pub(crate) fan_in_spec: Option<HubFilteredFanInSpec<'a>>,
-    pub(crate) fan_out_spec: Option<DelegatorFilteredFanOutSpec<'a>>,
-    pub(crate) cyclomatic_spec: Option<DispatcherFilteredCyclomaticSpec<'a>>,
-    pub(crate) params_spec: Option<WideSignatureFilteredParamsSpec<'a>>,
+    /// Gated specs. `collect` emits them in this order but defers `fan_in`
+    /// until after every other spec; collection order is the top-k tie-break.
+    pub(crate) gated: Vec<GatedSpec<'a>>,
 }
 
 impl<'a> MetricSpecs<'a> {
     pub(crate) fn new(m: &'a MetricsBundle, config: &'a Config) -> Self {
-        // Thresholds resolve by metric name (config serde keys).
         let th = config.thresholds.by_name();
         let c = m.complexity;
         let spec = |name: &'static str,
@@ -493,53 +346,67 @@ impl<'a> MetricSpecs<'a> {
             (!config.is_disabled("function_size")).then(|| {
                 TwoSidedSizeSpec::new(m, &config.thresholds.function_size)
             });
-        let fan_in_spec =
-            (!config.is_disabled("fan_in")).then(|| HubFilteredFanInSpec {
-                distribution: &m.structural.fan_in.distribution,
-                thresholds: th["fan_in"].clone(),
-                hubs: &m.structural.hubs,
-            });
-        let fan_out_spec = (!config.is_disabled("fan_out")).then(|| {
-            DelegatorFilteredFanOutSpec::new(m, th["fan_out"].clone(), &th)
-        });
-        let cyclomatic_spec = (!config.is_disabled("cyclomatic")).then(|| {
-            DispatcherFilteredCyclomaticSpec::new(
-                m,
-                th["cyclomatic"].clone(),
-                &th,
-            )
-        });
-        let params_spec = (!config.is_disabled("params")).then(|| {
-            WideSignatureFilteredParamsSpec::new(m, th["params"].clone(), &th)
-        });
 
-        MetricSpecs {
-            int_specs,
-            function_size_spec,
-            fan_in_spec,
-            fan_out_spec,
-            cyclomatic_spec,
-            params_spec,
-        }
+        let low_complexity = || Suppression::LowComplexity {
+            cyclomatic: GatedSpec::by_symbol(&c.cyclomatic.distribution),
+            cognitive: GatedSpec::by_symbol(&c.cognitive.distribution),
+            cyclomatic_fair: th["cyclomatic"].fair,
+            cognitive_fair: th["cognitive"].fair,
+        };
+        let low_cognitive = || Suppression::LowCognitive {
+            cognitive: GatedSpec::by_symbol(&c.cognitive.distribution),
+            cognitive_fair: th["cognitive"].fair,
+        };
+        // Each entry states its own gate, so a new gated metric cannot
+        // silently inherit another's suppression predicate.
+        let candidates = [
+            (
+                "fan_out",
+                &m.structural.fan_out.distribution[..],
+                Some(0),
+                low_complexity(),
+            ),
+            (
+                "cyclomatic",
+                &c.cyclomatic.distribution[..],
+                Some(1),
+                low_cognitive(),
+            ),
+            ("params", &c.params.distribution[..], Some(0), low_complexity()),
+            (
+                "fan_in",
+                &m.structural.fan_in.distribution[..],
+                None,
+                Suppression::NotHub { hubs: &m.structural.hubs },
+            ),
+        ];
+        let gated = candidates
+            .into_iter()
+            .filter(|(name, ..)| !config.is_disabled(name))
+            .map(|(name, distribution, boring_threshold, suppression)| {
+                GatedSpec {
+                    name,
+                    distribution,
+                    thresholds: th[name].clone(),
+                    boring_threshold,
+                    suppression,
+                }
+            })
+            .collect();
+
+        MetricSpecs { int_specs, function_size_spec, gated }
     }
 
     /// Collect rows from every spec. `filter` restricts to one symbol
     /// (symbol view); `None` collects everything (global sorting mode).
     fn collect(&self, filter: Option<&str>) -> Vec<ScoredRow> {
         let mut rows = Vec::new();
-        if let Some(spec) = &self.fan_out_spec {
+        let global = filter.is_none();
+        let (fan_in, other_gated): (Vec<_>, Vec<_>) =
+            self.gated.iter().partition(|spec| spec.name == "fan_in");
+        for spec in other_gated {
             collect_rows(spec.distribution, filter, &mut rows, |s, v| {
-                spec.score(s, v, filter.is_none())
-            });
-        }
-        if let Some(spec) = &self.cyclomatic_spec {
-            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
-                spec.score(s, v, filter.is_none())
-            });
-        }
-        if let Some(spec) = &self.params_spec {
-            collect_rows(spec.distribution, filter, &mut rows, |s, v| {
-                spec.score(s, v, filter.is_none())
+                spec.score(s, v, global)
             });
         }
         for spec in &self.int_specs {
@@ -552,16 +419,15 @@ impl<'a> MetricSpecs<'a> {
                 spec.score(s, v)
             });
         }
-        if let Some(spec) = &self.fan_in_spec {
+        for spec in fan_in {
             collect_rows(spec.distribution, filter, &mut rows, |s, v| {
-                spec.score(s, v, filter.is_none())
+                spec.score(s, v, global)
             });
         }
         rows
     }
 }
 
-/// Canonical metric display order
 const METRIC_ORDER: &[&str] = &[
     "fan_out",
     "fan_in",
@@ -693,20 +559,35 @@ mod tests {
         assert_eq!(by_symbol["big"], Bucket::Critical);
     }
 
+    /// A spec gated on both complexities being low: `fan_out` (Delegator)
+    /// and `params` (wide signature).
+    fn low_complexity_spec<'a>(
+        name: &'static str,
+        distribution: &'a [(String, usize)],
+        cyclomatic: &[(&'a str, usize)],
+        cognitive: &[(&'a str, usize)],
+    ) -> GatedSpec<'a> {
+        let th = Config::default().thresholds.by_name();
+        GatedSpec {
+            name,
+            distribution,
+            thresholds: th[name].clone(),
+            boring_threshold: Some(0),
+            suppression: Suppression::LowComplexity {
+                cyclomatic: cyclomatic.iter().copied().collect(),
+                cognitive: cognitive.iter().copied().collect(),
+                cyclomatic_fair: th["cyclomatic"].fair,
+                cognitive_fair: th["cognitive"].fair,
+            },
+        }
+    }
+
     fn fanout_spec<'a>(
         distribution: &'a [(String, usize)],
         cyclomatic: &[(&'a str, usize)],
         cognitive: &[(&'a str, usize)],
-    ) -> DelegatorFilteredFanOutSpec<'a> {
-        let th = Config::default().thresholds.by_name();
-        DelegatorFilteredFanOutSpec {
-            distribution,
-            thresholds: th["fan_out"].clone(),
-            cyclomatic: cyclomatic.iter().copied().collect(),
-            cognitive: cognitive.iter().copied().collect(),
-            cyclomatic_fair: th["cyclomatic"].fair,
-            cognitive_fair: th["cognitive"].fair,
-        }
+    ) -> GatedSpec<'a> {
+        low_complexity_spec("fan_out", distribution, cyclomatic, cognitive)
     }
 
     #[test]
@@ -744,16 +625,23 @@ mod tests {
         assert!(spec.score("delegator", 0, false).is_none());
     }
 
-    fn cyclomatic_spec<'a>(
+    /// A spec gated on cognitive alone: `cyclomatic` (Dispatcher).
+    fn dispatcher_spec<'a>(
+        name: &'static str,
+        boring_threshold: usize,
         distribution: &'a [(String, usize)],
         cognitive: &[(&'a str, usize)],
-    ) -> DispatcherFilteredCyclomaticSpec<'a> {
+    ) -> GatedSpec<'a> {
         let th = Config::default().thresholds.by_name();
-        DispatcherFilteredCyclomaticSpec {
+        GatedSpec {
+            name,
             distribution,
-            thresholds: th["cyclomatic"].clone(),
-            cognitive: cognitive.iter().copied().collect(),
-            cognitive_fair: th["cognitive"].fair,
+            thresholds: th[name].clone(),
+            boring_threshold: Some(boring_threshold),
+            suppression: Suppression::LowCognitive {
+                cognitive: cognitive.iter().copied().collect(),
+                cognitive_fair: th["cognitive"].fair,
+            },
         }
     }
 
@@ -762,7 +650,9 @@ mod tests {
         let distribution =
             vec![("dispatcher".to_string(), 30), ("nested".to_string(), 30)];
         // cognitive: dispatcher low (flat breadth), nested high (real depth).
-        let spec = cyclomatic_spec(
+        let spec = dispatcher_spec(
+            "cyclomatic",
+            1,
             &distribution,
             &[("dispatcher", 2), ("nested", 25)],
         );
@@ -790,16 +680,8 @@ mod tests {
         distribution: &'a [(String, usize)],
         cyclomatic: &[(&'a str, usize)],
         cognitive: &[(&'a str, usize)],
-    ) -> WideSignatureFilteredParamsSpec<'a> {
-        let th = Config::default().thresholds.by_name();
-        WideSignatureFilteredParamsSpec {
-            distribution,
-            thresholds: th["params"].clone(),
-            cyclomatic: cyclomatic.iter().copied().collect(),
-            cognitive: cognitive.iter().copied().collect(),
-            cyclomatic_fair: th["cyclomatic"].fair,
-            cognitive_fair: th["cognitive"].fair,
-        }
+    ) -> GatedSpec<'a> {
+        low_complexity_spec("params", distribution, cyclomatic, cognitive)
     }
 
     #[test]

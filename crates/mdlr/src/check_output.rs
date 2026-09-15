@@ -20,7 +20,6 @@ use crate::metrics_rows::{
 };
 use mdlr_metrics::{BucketedMetrics, Thresholds};
 
-/// Bundle the computed metrics for row collection.
 fn metrics_bundle(computed: &ComputedMetrics) -> MetricsBundle<'_> {
     MetricsBundle {
         structural: &computed.structural,
@@ -68,7 +67,6 @@ pub(crate) fn render(
     }
 }
 
-/// How rows should be selected for this run's filter.
 fn row_selection<'a>(filter: &'a CheckFilter, k: i32) -> RowSelection<'a> {
     match filter {
         CheckFilter::Symbol(s) => RowSelection::Symbol(s.as_str()),
@@ -84,7 +82,6 @@ struct TextOptions<'a> {
     scope: &'a ScopeInfo,
 }
 
-/// Format and print text output
 fn format_text_output(
     computed: &ComputedMetrics,
     config: &config::Config,
@@ -131,14 +128,12 @@ fn format_text_output(
     Ok(())
 }
 
-/// Format and print JSON output
 fn format_json_output(
     computed: &ComputedMetrics,
     config: &config::Config,
     args: &RenderArgs,
     scope: &ScopeInfo,
 ) -> Result<()> {
-    // When filtering by symbol, output specific metrics for that symbol
     if let CheckFilter::Symbol(symbol_id) = args.filter {
         let output = build_symbol_json(computed, config, symbol_id);
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -171,7 +166,6 @@ fn build_metrics_json(
     computed: &ComputedMetrics,
     config: &config::Config,
 ) -> serde_json::Value {
-    // Bucket the structural summary with the user's configured thresholds.
     let t = &config.thresholds;
     let thresholds = Thresholds {
         dag_density: t.dag_density.clone(),
@@ -276,7 +270,6 @@ fn prune_disabled_metrics(
     }
 }
 
-/// Look up a symbol's value in a distribution.
 fn find_value(dist: &[(String, usize)], symbol_id: &str) -> Option<usize> {
     dist.iter().find(|(n, _)| n == symbol_id).map(|(_, v)| *v)
 }
@@ -305,25 +298,10 @@ fn build_symbol_json(
             insert(spec.name, value, spec.bucket_for(value));
         }
     }
-    if let Some(spec) = &specs.fan_out_spec
-        && let Some(value) = find_value(spec.distribution, symbol_id)
-    {
-        insert("fan_out", value, spec.thresholds.evaluate(value as f64));
-    }
-    if let Some(spec) = &specs.cyclomatic_spec
-        && let Some(value) = find_value(spec.distribution, symbol_id)
-    {
-        insert("cyclomatic", value, spec.thresholds.evaluate(value as f64));
-    }
-    if let Some(spec) = &specs.params_spec
-        && let Some(value) = find_value(spec.distribution, symbol_id)
-    {
-        insert("params", value, spec.thresholds.evaluate(value as f64));
-    }
-    if let Some(spec) = &specs.fan_in_spec
-        && let Some(value) = find_value(spec.distribution, symbol_id)
-    {
-        insert("fan_in", value, spec.thresholds.evaluate(value as f64));
+    for spec in &specs.gated {
+        if let Some(value) = find_value(spec.distribution, symbol_id) {
+            insert(spec.name, value, spec.thresholds.evaluate(value as f64));
+        }
     }
     if let Some(spec) = &specs.function_size_spec
         && let Some(value) = find_value(spec.distribution, symbol_id)
