@@ -18,6 +18,14 @@ If a closure spans lines 20-30 inside a function spanning lines 1-50, lines 20-3
 
 `line_cov` is the first metric in mdlr that uses `SortDirection::Asc` — **lower values are worse**. The distribution is sorted worst-first (smallest %), so `-k 3` shows the three least-covered functions.
 
+## Effect on Ranking
+
+Passing `--cov` also changes the order of the text worklist, not just the rows in it. Within one metric and one severity bucket, the least-covered unit is listed first: among functions the same metric calls `critical`, an untested one is a worse use of the next editing pass than an equally complex one the tests already exercise.
+
+The tie-break never reorders across metrics. Severity buckets are coarse — hundreds of rows can share `critical` — so ranking a whole bucket by coverage would let a trivial untested unit outrank a genuinely alarming one under a different metric. Without `--cov` the order is exactly what it was.
+
+`--format json` emits each metric's full distribution in its own order, so its ordering is unchanged either way.
+
 ## Default Thresholds
 
 | Bucket    | Value           |

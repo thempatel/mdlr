@@ -26,7 +26,7 @@ mdlr check [target] [-k <count>] [--pretty] [--format <format>] [-A] [-f <dir>] 
 | `-A, --all` | false | Analyze all files even when on a branch |
 | `-f, --filter` | - | Scope analysis to a specific directory (combines with diff/all mode) |
 | `-q, --quiet` | false | Suppress progress display (progress is shown by default when stderr is a TTY) |
-| `--cov <PATH>` | - | LCOV coverage file to overlay onto changed files. Repeatable: pass `--cov` once per file and they are merged. Adds two metrics: `line_cov` (per-function %) and `uncov_branches` (per-function untaken-branch count, only when the lcov has BRDA records). See [line coverage](../metrics/line-coverage.md) and [uncovered branches](../metrics/uncov-branches.md). |
+| `--cov <PATH>` | - | LCOV coverage file to overlay onto changed files. Repeatable: pass `--cov` once per file and they are merged. Adds two metrics: `line_cov` (per-function %) and `uncov_branches` (per-function untaken-branch count, only when the lcov has BRDA records). In text output, also ranks the least-covered unit first within each metric's severity bucket (`--format json` ordering is unchanged) — see [line coverage](../metrics/line-coverage.md#effect-on-ranking) and [uncovered branches](../metrics/uncov-branches.md). |
 
 By default, `check` runs in **diff mode**, picking one of three scopes by precedence:
 

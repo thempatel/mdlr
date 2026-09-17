@@ -498,8 +498,34 @@ const METRIC_ORDER: &[&str] = &[
     "uncov_branches",
 ];
 
-/// Sort scored rows by severity, apply limit, then group by metric in canonical order.
-fn sort_and_group(mut scored_rows: Vec<ScoredRow>, k: i32) -> Vec<MetricRow> {
+/// Sort scored rows by severity, break ties on coverage, apply the limit, then
+/// group by metric in canonical order.
+///
+/// `line_cov` maps unit id to coverage percentage and is empty unless `--cov`
+/// was passed. Ties are broken *within one metric*: among units the same metric
+/// scores in the same bucket, the least-covered comes first, because an
+/// untested branchy function is a worse use of the agent's next turn than an
+/// equally branchy one the tests already exercise.
+///
+/// Deliberately not a global tie-break. Severity buckets are coarse — hundreds
+/// of rows share `critical` — so ranking the whole bucket by coverage lets a
+/// trivial untested unit outrank a genuinely alarming one under a different
+/// metric. Confining it to each metric's own run keeps cross-metric order at
+/// what the collector produced, and without `--cov` nothing moves at all.
+fn sort_and_group(
+    mut scored_rows: Vec<ScoredRow>,
+    k: i32,
+    line_cov: &HashMap<&str, usize>,
+) -> Vec<MetricRow> {
+    // `collect` appends one spec's rows at a time, so a metric's rows are
+    // already contiguous here.
+    for run in scored_rows.chunk_by_mut(|a, b| a.metric_name == b.metric_name)
+    {
+        run.sort_by_key(|row| {
+            line_cov.get(row.symbol.as_str()).copied().unwrap_or(100)
+        });
+    }
+    // Stable, so the coverage order within each metric survives.
     scored_rows.sort_by(|a, b| b.severity().cmp(&a.severity()));
 
     let selected: Vec<ScoredRow> = if k < 0 {
@@ -554,7 +580,19 @@ pub fn collect_metric_rows(
         RowSelection::Symbol(_) => {
             rows.into_iter().map(ScoredRow::into_row).collect()
         }
-        RowSelection::Top(k) => sort_and_group(rows, k),
+        RowSelection::Top(k) => {
+            let line_cov = metrics
+                .coverage
+                .map(|c| {
+                    c.line_cov
+                        .distribution
+                        .iter()
+                        .map(|(id, pct)| (id.as_str(), *pct))
+                        .collect()
+                })
+                .unwrap_or_default();
+            sort_and_group(rows, k, &line_cov)
+        }
     }
 }
 
@@ -769,6 +807,60 @@ mod tests {
                 cognitive_fair: th["cognitive"].fair,
             },
         }
+    }
+
+    fn row(metric: &str, symbol: &str, bucket: Bucket) -> ScoredRow {
+        ScoredRow {
+            metric_name: metric.to_string(),
+            symbol: symbol.to_string(),
+            value: "1".to_string(),
+            bucket,
+        }
+    }
+
+    #[test]
+    fn coverage_breaks_ties_within_a_metric() {
+        let rows = vec![
+            row("cyclomatic", "covered", Bucket::Critical),
+            row("cyclomatic", "untested", Bucket::Critical),
+            row("cyclomatic", "merely_poor", Bucket::Poor),
+        ];
+        let cov = HashMap::from([("covered", 90), ("untested", 10)]);
+
+        let out = sort_and_group(rows, -1, &cov);
+        let symbols: Vec<&str> = out.iter().map(|r| r.1.as_str()).collect();
+        // Severity still leads; the untested unit wins the tie inside it.
+        assert_eq!(symbols, ["untested", "covered", "merely_poor"]);
+    }
+
+    #[test]
+    fn coverage_never_reorders_across_metrics() {
+        // A critical duplication_pct row on untested code must not displace a
+        // critical cyclomatic row that happens to be partly covered.
+        let rows = vec![
+            row("cyclomatic", "covered_hotspot", Bucket::Critical),
+            row("duplication_pct", "untested_helper", Bucket::Critical),
+        ];
+        let cov =
+            HashMap::from([("covered_hotspot", 80), ("untested_helper", 0)]);
+
+        // k = 1 so the assertion observes top-k selection. Collecting every
+        // row instead would only observe the canonical display grouping,
+        // which puts cyclomatic ahead of duplication_pct regardless.
+        let out = sort_and_group(rows, 1, &cov);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "cyclomatic");
+    }
+
+    #[test]
+    fn without_coverage_the_order_is_untouched() {
+        let rows = vec![
+            row("cyclomatic", "a", Bucket::Critical),
+            row("cyclomatic", "b", Bucket::Critical),
+        ];
+        let out = sort_and_group(rows, -1, &HashMap::new());
+        let symbols: Vec<&str> = out.iter().map(|r| r.1.as_str()).collect();
+        assert_eq!(symbols, ["a", "b"]);
     }
 
     fn fanout_spec<'a>(
